@@ -4,8 +4,8 @@ import (
 	"container/heap"
 	"errors"
 	"github.com/radiation-octopus/octopus-blockchain/block"
-	"github.com/radiation-octopus/octopus-blockchain/operationDB"
-	"github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus/log"
 	"github.com/radiation-octopus/octopus/utils"
 	"math"
@@ -20,8 +20,8 @@ import (
 //区块链提供区块链的状态和当前气体限制，以便在tx池和事件订阅者中进行一些预检查。
 type blockChainop interface {
 	CurrentBlock() *block.Block
-	GetBlock(hash operationUtils.Hash, number uint64) *block.Block
-	StateAt(root operationUtils.Hash) (*operationDB.OperationDB, error)
+	GetBlock(hash entity.Hash, number uint64) *block.Block
+	StateAt(root entity.Hash) (*operationdb.OperationDB, error)
 	SubscribeChainHeadEvent(ch chan<- ChainHeadEvent) Subscription
 }
 
@@ -126,18 +126,18 @@ type TxPool struct {
 	eip2718  bool // Fork指示器是否使用EIP-2718类型的事务。
 	eip1559  bool // Fork指示器是否使用EIP-1559类型的事务。
 
-	currentState  *operationDB.OperationDB // 区块链头部的当前状态
+	currentState  *operationdb.OperationDB // 区块链头部的当前状态
 	pendingNonces *txNoncer                // 挂起状态跟踪虚拟nonce
 	currentMaxGas uint64                   // 交易上限的当前gas限值
 
 	locals *accountSet // 要免除逐出规则的本地事务集
 	//journal *txJournal  // 要备份到磁盘的本地事务日志
 
-	pending map[operationUtils.Address]*txList   // 所有当前可处理的事务
-	queue   map[operationUtils.Address]*txList   // 排队但不可处理的事务
-	beats   map[operationUtils.Address]time.Time // 每个已知帐户的最后心跳
-	all     *txLookup                            // 允许查找的所有事务
-	priced  *txPricedList                        // 按价格排序的所有交易记录
+	pending map[entity.Address]*txList   // 所有当前可处理的事务
+	queue   map[entity.Address]*txList   // 排队但不可处理的事务
+	beats   map[entity.Address]time.Time // 每个已知帐户的最后心跳
+	all     *txLookup                    // 允许查找的所有事务
+	priced  *txPricedList                // 按价格排序的所有交易记录
 
 	chainHeadCh     chan ChainHeadEvent
 	chainHeadSub    Subscription
@@ -153,10 +153,10 @@ type TxPool struct {
 }
 
 type TxPoolConfig struct {
-	Locals    []operationUtils.Address // 默认情况下应视为本地的地址
-	NoLocals  bool                     // 是否应禁用本地事务处理
-	Journal   string                   // 节点重新启动后的本地事务日志
-	Rejournal time.Duration            // 重新生成本地事务日志的时间间隔
+	Locals    []entity.Address // 默认情况下应视为本地的地址
+	NoLocals  bool             // 是否应禁用本地事务处理
+	Journal   string           // 节点重新启动后的本地事务日志
+	Rejournal time.Duration    // 重新生成本地事务日志的时间间隔
 
 	PriceLimit uint64 // 强制执行的最低gas价格，以便进入事务池
 	PriceBump  uint64 // 替换现有交易的最低涨价百分比（nonce）
@@ -233,9 +233,9 @@ func NewTxPool(config TxPoolConfig, chain blockChainop) *TxPool {
 		//chainconfig:     chainconfig,
 		chain: chain,
 		//signer:          types.LatestSigner(chainconfig),
-		pending: make(map[operationUtils.Address]*txList),
-		queue:   make(map[operationUtils.Address]*txList),
-		beats:   make(map[operationUtils.Address]time.Time),
+		pending: make(map[entity.Address]*txList),
+		queue:   make(map[entity.Address]*txList),
+		beats:   make(map[entity.Address]time.Time),
 		//all:             newTxLookup(),
 		chainHeadCh:     make(chan ChainHeadEvent, chainHeadChanSize),
 		reqResetCh:      make(chan *txpoolResetRequest),
@@ -278,11 +278,11 @@ func NewTxPool(config TxPoolConfig, chain blockChainop) *TxPool {
 	return pool
 }
 
-func (pool *TxPool) Pending(enforceTips bool) map[operationUtils.Address]block.Transactions {
+func (pool *TxPool) Pending(enforceTips bool) map[entity.Address]block.Transactions {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
-	pending := make(map[operationUtils.Address]block.Transactions)
+	pending := make(map[entity.Address]block.Transactions)
 	for addr, list := range pool.pending {
 		txs := list.Flatten()
 
@@ -303,7 +303,7 @@ func (pool *TxPool) Pending(enforceTips bool) map[operationUtils.Address]block.T
 }
 
 //Locals检索池当前认为是本地的帐户。
-func (pool *TxPool) Locals() []operationUtils.Address {
+func (pool *TxPool) Locals() []entity.Address {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
@@ -325,7 +325,7 @@ func (pool *TxPool) scheduleReorgLoop() {
 		launchNextRun bool
 		reset         *txpoolResetRequest
 		dirtyAccounts *accountSet
-		queuedEvents  = make(map[operationUtils.Address]*txSortedMap)
+		queuedEvents  = make(map[entity.Address]*txSortedMap)
 	)
 	for {
 		// Launch next background reorg if needed
@@ -338,7 +338,7 @@ func (pool *TxPool) scheduleReorgLoop() {
 			launchNextRun = false
 
 			reset, dirtyAccounts = nil, nil
-			queuedEvents = make(map[operationUtils.Address]*txSortedMap)
+			queuedEvents = make(map[entity.Address]*txSortedMap)
 		}
 
 		select {
@@ -386,13 +386,13 @@ func (pool *TxPool) scheduleReorgLoop() {
 }
 
 //runReorg代表scheduleReorgLoop运行reset和promoteExecutables。
-func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[operationUtils.Address]*txSortedMap) {
+func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[entity.Address]*txSortedMap) {
 	defer func(t0 time.Time) {
 		//reorgDurationTimer.Update(time.Since(t0))
 	}(time.Now())
 	defer close(done)
 
-	var promoteAddrs []operationUtils.Address
+	var promoteAddrs []entity.Address
 	if dirtyAccounts != nil && reset == nil {
 		// 只有脏账户需要升级，除非我们正在重置。
 		//对于重置，将提升tx队列中的所有地址，并且可以避免展平操作。
@@ -411,7 +411,7 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 			}
 		}
 		// Reset needs promote for all addresses
-		promoteAddrs = make([]operationUtils.Address, 0, len(pool.queue))
+		promoteAddrs = make([]entity.Address, 0, len(pool.queue))
 		for addr := range pool.queue {
 			promoteAddrs = append(promoteAddrs, addr)
 		}
@@ -427,7 +427,7 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 		//	pool.priced.SetBaseFee(pendingBaseFee)
 		//}
 		// 将所有帐户更新为最新的已知挂起状态
-		nonces := make(map[operationUtils.Address]uint64, len(pool.pending))
+		nonces := make(map[entity.Address]uint64, len(pool.pending))
 		for addr, list := range pool.pending {
 			highestPending := list.LastElement()
 			nonces[addr] = highestPending.Nonce() + 1
@@ -649,7 +649,7 @@ func (pool *TxPool) add(tx *block.Transaction, local bool) (replaced bool, err e
 }
 
 // promoteExecutables将可处理的事务从未来队列移动到挂起的事务集。在此过程中，将删除所有无效事务（低nonce、低余额）。
-func (pool *TxPool) promoteExecutables(accounts []operationUtils.Address) []*block.Transaction {
+func (pool *TxPool) promoteExecutables(accounts []entity.Address) []*block.Transaction {
 	// 跟踪提升的事务以立即广播它们
 	var promoted []*block.Transaction
 
@@ -714,7 +714,7 @@ func (pool *TxPool) promoteExecutables(accounts []operationUtils.Address) []*blo
 
 // promoteTx将一个事务添加到待处理（可处理）事务列表中，并返回是否插入了该事务或旧事务更好。
 //注意，此方法假定池锁定已保持！
-func (pool *TxPool) promoteTx(addr operationUtils.Address, hash operationUtils.Hash, tx *block.Transaction) bool {
+func (pool *TxPool) promoteTx(addr entity.Address, hash entity.Hash, tx *block.Transaction) bool {
 	// 尝试将事务插入挂起队列
 	if pool.pending[addr] == nil {
 		pool.pending[addr] = newTxList(true)
@@ -803,7 +803,7 @@ func (pool *TxPool) demoteUnexecutables() {
 
 //enqueueTx将新事务插入不可执行事务队列。
 //注意，此方法假定池锁定已保持！
-func (pool *TxPool) enqueueTx(hash operationUtils.Hash, tx *block.Transaction, local bool, addAll bool) (bool, error) {
+func (pool *TxPool) enqueueTx(hash entity.Hash, tx *block.Transaction, local bool, addAll bool) (bool, error) {
 	// 尝试将事务插入未来队列
 	from, _ := block.Sender(pool.signer, tx) // 已验证
 	if pool.queue[from] == nil {
@@ -859,16 +859,16 @@ func (pool *TxPool) truncatePending() {
 		}
 	}
 	// 逐步删除违规者的交易
-	offenders := []operationUtils.Address{}
+	offenders := []entity.Address{}
 	for pending > pool.config.GlobalSlots && !spammers.Empty() {
 		// 如果不是本地地址，则检索下一个罪犯
 		offender, _ := spammers.Pop()
-		offenders = append(offenders, offender.(operationUtils.Address))
+		offenders = append(offenders, offender.(entity.Address))
 
 		// 平衡余额，直到所有余额都相同或低于阈值
 		if len(offenders) > 1 {
 			// 计算所有当前违规者的均衡阈值
-			threshold := pool.pending[offender.(operationUtils.Address)].Len()
+			threshold := pool.pending[offender.(entity.Address)].Len()
 
 			// 反复减少所有违规者，直到达到限制或阈值以下
 			for pending > pool.config.GlobalSlots && pool.pending[offenders[len(offenders)-2]].Len() > threshold {
@@ -970,7 +970,7 @@ func (pool *TxPool) truncateQueue() {
 }
 
 // removeTx从队列中删除单个事务，将所有后续事务移回未来队列。
-func (pool *TxPool) removeTx(hash operationUtils.Hash, outofbound bool) {
+func (pool *TxPool) removeTx(hash entity.Hash, outofbound bool) {
 	// 获取要删除的事务
 	tx := pool.all.Get(hash)
 	if tx == nil {
@@ -1035,7 +1035,7 @@ func (pool *TxPool) addTxsLocked(txs []*block.Transaction, local bool) ([]error,
 
 // addressByHeartbeat是一个带有最后一个活动时间戳的帐户地址。
 type addressByHeartbeat struct {
-	address   operationUtils.Address
+	address   entity.Address
 	heartbeat time.Time
 }
 
@@ -1051,15 +1051,15 @@ func (a addressesByHeartbeat) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 
 //accountSet只是一组用于检查是否存在的地址，以及能够从事务中派生地址的签名者。
 type accountSet struct {
-	accounts map[operationUtils.Address]struct{}
+	accounts map[entity.Address]struct{}
 	signer   block.Signer
-	cache    *[]operationUtils.Address
+	cache    *[]entity.Address
 }
 
 // 展平返回此集合中的地址列表，并将其缓存以供以后重用。不应更改返回的切片！
-func (as *accountSet) flatten() []operationUtils.Address {
+func (as *accountSet) flatten() []entity.Address {
 	if as.cache == nil {
-		accounts := make([]operationUtils.Address, 0, len(as.accounts))
+		accounts := make([]entity.Address, 0, len(as.accounts))
 		for account := range as.accounts {
 			accounts = append(accounts, account)
 		}
@@ -1069,7 +1069,7 @@ func (as *accountSet) flatten() []operationUtils.Address {
 }
 
 //包含检查给定地址是否包含在集合中。
-func (as *accountSet) contains(addr operationUtils.Address) bool {
+func (as *accountSet) contains(addr entity.Address) bool {
 	_, exist := as.accounts[addr]
 	return exist
 }
@@ -1083,15 +1083,15 @@ func (as *accountSet) containsTx(tx *block.Transaction) bool {
 }
 
 // add在要跟踪的集合中插入新地址。
-func (as *accountSet) add(addr operationUtils.Address) {
+func (as *accountSet) add(addr entity.Address) {
 	as.accounts[addr] = struct{}{}
 	as.cache = nil
 }
 
 // newAccountSet为发件人派生创建一个新的地址集，该地址集具有关联的签名者。
-func newAccountSet(signer block.Signer, addrs ...operationUtils.Address) *accountSet {
+func newAccountSet(signer block.Signer, addrs ...entity.Address) *accountSet {
 	as := &accountSet{
-		accounts: make(map[operationUtils.Address]struct{}),
+		accounts: make(map[entity.Address]struct{}),
 		signer:   signer,
 	}
 	for _, addr := range addrs {
@@ -1104,21 +1104,21 @@ func newAccountSet(signer block.Signer, addrs ...operationUtils.Address) *accoun
 txNoncer是一个小型虚拟状态数据库，用于管理池中帐户的可执行nonce，如果帐户未知，则返回到从真实状态数据库读取。
 */
 type txNoncer struct {
-	fallback *operationDB.OperationDB
-	nonces   map[operationUtils.Address]uint64
+	fallback *operationdb.OperationDB
+	nonces   map[entity.Address]uint64
 	lock     sync.Mutex
 }
 
 // newTxNoncer创建一个新的虚拟状态数据库来跟踪池nonce。
-func newTxNoncer(statedb *operationDB.OperationDB) *txNoncer {
+func newTxNoncer(statedb *operationdb.OperationDB) *txNoncer {
 	return &txNoncer{
 		fallback: statedb.Copy(),
-		nonces:   make(map[operationUtils.Address]uint64),
+		nonces:   make(map[entity.Address]uint64),
 	}
 }
 
 // get返回帐户的当前nonce，如果帐户未知，则返回到真实状态数据库。
-func (txn *txNoncer) get(addr operationUtils.Address) uint64 {
+func (txn *txNoncer) get(addr entity.Address) uint64 {
 	// 我们使用互斥体进行get操作，即使对于读访问，底层状态也会改变db。
 	txn.lock.Lock()
 	defer txn.lock.Unlock()
@@ -1130,7 +1130,7 @@ func (txn *txNoncer) get(addr operationUtils.Address) uint64 {
 }
 
 // set在虚拟操作数据库中插入一个新的虚拟nonce，以便在池请求时返回，而不是访问真实状态数据库。
-func (txn *txNoncer) set(addr operationUtils.Address, nonce uint64) {
+func (txn *txNoncer) set(addr entity.Address, nonce uint64) {
 	txn.lock.Lock()
 	defer txn.lock.Unlock()
 
@@ -1138,7 +1138,7 @@ func (txn *txNoncer) set(addr operationUtils.Address, nonce uint64) {
 }
 
 // setAll将所有帐户的nonce设置为给定映射。
-func (txn *txNoncer) setAll(all map[operationUtils.Address]uint64) {
+func (txn *txNoncer) setAll(all map[entity.Address]uint64) {
 	txn.lock.Lock()
 	defer txn.lock.Unlock()
 
@@ -1146,7 +1146,7 @@ func (txn *txNoncer) setAll(all map[operationUtils.Address]uint64) {
 }
 
 //如果新的虚拟nonce较低，setIfLower会将新的虚拟nonce更新到虚拟操作数据库中。
-func (txn *txNoncer) setIfLower(addr operationUtils.Address, nonce uint64) {
+func (txn *txNoncer) setIfLower(addr entity.Address, nonce uint64) {
 	txn.lock.Lock()
 	defer txn.lock.Unlock()
 
@@ -1510,12 +1510,12 @@ txLookup循环跟踪事务
 type txLookup struct {
 	slots   int
 	lock    sync.RWMutex
-	locals  map[operationUtils.Hash]*block.Transaction
-	remotes map[operationUtils.Hash]*block.Transaction
+	locals  map[entity.Hash]*block.Transaction
+	remotes map[entity.Hash]*block.Transaction
 }
 
 //删除从查找中删除事务。
-func (t *txLookup) Remove(hash operationUtils.Hash) {
+func (t *txLookup) Remove(hash entity.Hash) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
@@ -1543,7 +1543,7 @@ func (t *txLookup) RemoteCount() int {
 }
 
 // Range对映射中存在的每个键和值调用f。传递的回调应该返回是否需要继续迭代的指示符。调用方需要指定要迭代的集合（或两者）。
-func (t *txLookup) Range(f func(hash operationUtils.Hash, tx *block.Transaction, local bool) bool, local bool, remote bool) {
+func (t *txLookup) Range(f func(hash entity.Hash, tx *block.Transaction, local bool) bool, local bool, remote bool) {
 	t.lock.RLock()
 	defer t.lock.RUnlock()
 
@@ -1579,7 +1579,7 @@ func (t *txLookup) Add(tx *block.Transaction, local bool) {
 }
 
 // Get returns a transaction if it exists in the lookup, or nil if not found.
-func (t *txLookup) Get(hash operationUtils.Hash) *block.Transaction {
+func (t *txLookup) Get(hash entity.Hash) *block.Transaction {
 	t.lock.RLock()
 	defer t.lock.RUnlock()
 
@@ -1626,7 +1626,7 @@ func (l *txPricedList) Reheap() {
 	//start := time.Now()
 	atomic.StoreInt64(&l.stales, 0)
 	l.urgent.list = make([]*block.Transaction, 0, l.all.RemoteCount())
-	l.all.Range(func(hash operationUtils.Hash, tx *block.Transaction, local bool) bool {
+	l.all.Range(func(hash entity.Hash, tx *block.Transaction, local bool) bool {
 		l.urgent.list = append(l.urgent.list, tx)
 		return true
 	}, false, true) // 仅迭代远程

@@ -1,27 +1,27 @@
 package blockchain
 
 import (
-	"github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
 )
 
 type Genesis struct {
-	Config     *ChainConfig           `json:"config"`
-	Nonce      uint64                 `json:"nonce"`
-	Timestamp  uint64                 `json:"timestamp"`
-	ExtraData  []byte                 `json:"extraData"`
-	GasLimit   uint64                 `json:"gasLimit"   gencodec:"required"`
-	Difficulty *big.Int               `json:"difficulty" gencodec:"required"`
-	Mixhash    operationUtils.Hash    `json:"mixHash"`
-	Coinbase   operationUtils.Address `json:"coinbase"`
+	Config     *ChainConfig   `json:"config"`
+	Nonce      uint64         `json:"nonce"`
+	Timestamp  uint64         `json:"timestamp"`
+	ExtraData  []byte         `json:"extraData"`
+	GasLimit   uint64         `json:"gasLimit"   gencodec:"required"`
+	Difficulty *big.Int       `json:"difficulty" gencodec:"required"`
+	Mixhash    entity.Hash    `json:"mixHash"`
+	Coinbase   entity.Address `json:"coinbase"`
 	//Alloc      GenesisAlloc        `json:"alloc"      gencodec:"required"`
 
 	//这些字段用于一致性测试。请不要在实际的genesis区块中使用它们。
-	Number     uint64              `json:"number"`
-	GasUsed    uint64              `json:"gasUsed"`
-	ParentHash operationUtils.Hash `json:"parentHash"`
-	BaseFee    *big.Int            `json:"baseFeePerGas"`
+	Number     uint64      `json:"number"`
+	GasUsed    uint64      `json:"gasUsed"`
+	ParentHash entity.Hash `json:"parentHash"`
+	BaseFee    *big.Int    `json:"baseFeePerGas"`
 }
 
 // DefaultRopstenGenesisBlock返回Ropsten network genesis块。

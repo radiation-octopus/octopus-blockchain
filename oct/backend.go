@@ -6,9 +6,9 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/blockchain"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/miner"
-	"github.com/radiation-octopus/octopus-blockchain/operationDB"
-	"github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"math/big"
 	"sync"
 	"time"
@@ -24,7 +24,7 @@ type Octopus struct {
 	//merger             *consensus.Merger
 
 	// DB interfaces
-	chainDb operationDB.Database // 区块链数据库
+	chainDb operationdb.Database // 区块链数据库
 
 	//eventMux       *event.TypeMux
 	engine consensus.Engine
@@ -38,7 +38,7 @@ type Octopus struct {
 
 	miner     *miner.Miner
 	gasPrice  *big.Int
-	etherbase operationUtils.Address
+	etherbase entity.Address
 
 	networkID uint64
 	//netRPCService *ethapi.PublicNetAPI
@@ -52,10 +52,10 @@ type Octopus struct {
 
 func (s *Octopus) BlockChain() *blockchain.BlockChain { return s.blockchain }
 func (s *Octopus) TxPool() *blockchain.TxPool         { return s.txPool }
-func (eth *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationDB.OperationDB, checkLive bool, preferDisk bool) (statedb *operationDB.OperationDB, err error) {
+func (eth *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationdb.OperationDB, checkLive bool, preferDisk bool) (statedb *operationdb.OperationDB, err error) {
 	var (
 		current  *block.Block
-		database operationDB.Database
+		database operationdb.Database
 		//report   = true
 		//origin   = b.NumberU64()
 	)
@@ -104,7 +104,7 @@ func (eth *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationD
 			}
 			current = parent
 
-			statedb, err = operationDB.New(current.Root(), database)
+			statedb, err = operationdb.New(current.Root(), &database)
 			if err == nil {
 				break
 			}
@@ -122,7 +122,7 @@ func (eth *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationD
 	//var (
 	//	start  = time.Now()
 	//	logged time.Time
-	//	parent operationUtils.Hash
+	//	parent operationutils.Hash
 	//)
 	//for current.NumberU64() < origin {
 	//	// Print progress logs if long enough time elapsed
@@ -204,7 +204,7 @@ func New(oct *Octopus) (*Octopus, error) {
 		//GPO:             ethconfig.Defaults.GPO,
 		//Ethash:          ethconfig.Defaults.Ethash,
 		Miner: miner.Config{
-			Etherbase: operationUtils.Address{1},
+			Etherbase: entity.Address{1},
 			GasCeil:   genesis.GasLimit * 11 / 10,
 			GasPrice:  big.NewInt(1),
 			Recommit:  time.Second,

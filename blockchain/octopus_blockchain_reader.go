@@ -2,8 +2,8 @@ package blockchain
 
 import (
 	"github.com/radiation-octopus/octopus-blockchain/block"
-	"github.com/radiation-octopus/octopus-blockchain/operationDB"
-	"github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"math/big"
 )
 
@@ -18,11 +18,11 @@ func (bc *BlockChain) CurrentHeader() *block.Header {
 	return bc.hc.CurrentHeader()
 }
 
-func (bc *BlockChain) GetHeader(hash operationUtils.Hash, number uint64) *block.Header {
+func (bc *BlockChain) GetHeader(hash entity.Hash, number uint64) *block.Header {
 	return bc.hc.GetHeader(hash, number)
 }
 
-func (bc *BlockChain) GetHeaderByHash(hash operationUtils.Hash) *block.Header {
+func (bc *BlockChain) GetHeaderByHash(hash entity.Hash) *block.Header {
 	return bc.hc.GetHeaderByHash(hash)
 }
 
@@ -30,18 +30,18 @@ func (bc *BlockChain) GetHeaderByNumber(number uint64) *block.Header {
 	return bc.hc.GetHeaderByNumber(number)
 }
 
-func (bc *BlockChain) GetTd(hash operationUtils.Hash, number uint64) *big.Int {
+func (bc *BlockChain) GetTd(hash entity.Hash, number uint64) *big.Int {
 	return bc.hc.GetTd(hash, number)
 }
 
 // GetBlock通过哈希和数字从数据库中检索块，如果找到，则将其缓存。
-func (bc *BlockChain) GetBlock(hash operationUtils.Hash) *block.Block {
+func (bc *BlockChain) GetBlock(hash entity.Hash) *block.Block {
 	// Short circuit if the block's already in the cache, retrieve otherwise
 	//if block, ok := bc.blockCache.Get(hash); ok {
 	//	return block.(*types.Block)
 	//}
 	var number uint64
-	block := operationDB.ReadBlock(bc.db, hash, number)
+	block := operationdb.ReadBlock(bc.db, hash, number)
 	if block == nil {
 		return nil
 	}
@@ -51,15 +51,15 @@ func (bc *BlockChain) GetBlock(hash operationUtils.Hash) *block.Block {
 }
 
 // HasBlock检查数据库中是否完全存在块。
-func (bc *BlockChain) HasBlock(hash operationUtils.Hash, number uint64) bool {
+func (bc *BlockChain) HasBlock(hash entity.Hash, number uint64) bool {
 	//if bc.blockCache.Contains(hash) {
 	//	return true
 	//}
-	return operationDB.HasBody(bc.db, hash, number)
+	return operationdb.HasBody(bc.db, hash, number)
 }
 
 // GetBlockByHash通过哈希从数据库中检索块，如果找到，则将其缓存。
-func (bc *BlockChain) GetBlockByHash(hash operationUtils.Hash) *block.Block {
+func (bc *BlockChain) GetBlockByHash(hash entity.Hash) *block.Block {
 	//number := bc.hc.GetBlockNumber(hash)
 	//if number == nil {
 	//	return nil
@@ -77,12 +77,12 @@ func (bc *BlockChain) CurrentBlock() *block.Block {
 }
 
 //StateAt基于特定时间点返回新的可变状态。
-func (bc *BlockChain) StateAt(root operationUtils.Hash) (*operationDB.OperationDB, error) {
-	return operationDB.New(root, bc.stateCache)
+func (bc *BlockChain) StateAt(root entity.Hash) (*operationdb.OperationDB, error) {
+	return operationdb.New(root, &bc.stateCache)
 }
 
 // GetBlocksFromHash返回与哈希对应的块，最多返回n-1个祖先。
-func (bc *BlockChain) GetBlocksFromHash(hash operationUtils.Hash, n int) (blocks []*block.Block) {
+func (bc *BlockChain) GetBlocksFromHash(hash entity.Hash, n int) (blocks []*block.Block) {
 	number := bc.hc.GetBlockNumber(hash)
 	if number == nil {
 		return nil

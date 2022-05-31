@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"container/heap"
 	"errors"
-	"github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
 	"sync/atomic"
@@ -37,7 +37,7 @@ type TxData interface {
 	gasFeeCap() *big.Int
 	value() *big.Int
 	nonce() uint64
-	to() *operationUtils.Address
+	to() *entity.Address
 
 	//rawSignatureValues() (v, r, s *big.Int)
 	//setSignatureValues(chainID, v, r, s *big.Int)
@@ -64,22 +64,22 @@ func (tx *Transaction) Value() *big.Int { return new(big.Int).Set(tx.inner.value
 func (tx *Transaction) Nonce() uint64 { return tx.inner.nonce() }
 
 // 返回交易的收件人地址
-func (tx *Transaction) To() *operationUtils.Address {
+func (tx *Transaction) To() *entity.Address {
 	return copyAddressPtr(tx.inner.to())
 }
 
 // 返回交易hash
-func (tx *Transaction) Hash() operationUtils.Hash {
+func (tx *Transaction) Hash() entity.Hash {
 	if hash := tx.hash.Load(); hash != nil {
-		return hash.(operationUtils.Hash)
+		return hash.(entity.Hash)
 	}
-	var h operationUtils.Hash
+	var h entity.Hash
 	//if tx.Type() == LegacyTxType {
 	//	h = rlpHash(tx.inner)
 	//} else {
 	//	h = prefixedRlpHash(tx.Type(), tx.inner)
 	//}
-	h = operationUtils.Hash{0}
+	h = entity.Hash{0}
 	tx.hash.Store(h)
 	return h
 }
@@ -199,7 +199,7 @@ func (s Transactions) EncodeIndex(i int, w *bytes.Buffer) {
 func TxDifference(a, b Transactions) Transactions {
 	keep := make(Transactions, 0, len(a))
 
-	remove := make(map[operationUtils.Hash]struct{})
+	remove := make(map[entity.Hash]struct{})
 	for _, tx := range b {
 		remove[tx.Hash()] = struct{}{}
 	}
@@ -215,8 +215,8 @@ func TxDifference(a, b Transactions) Transactions {
 
 //交易消息结构体
 type Message struct {
-	to        *operationUtils.Address
-	from      operationUtils.Address
+	to        *entity.Address
+	from      entity.Address
 	nonce     uint64
 	amount    *big.Int
 	gasLimit  uint64
@@ -235,7 +235,7 @@ func (s TxByNonce) Len() int           { return len(s) }
 func (s TxByNonce) Less(i, j int) bool { return s[i].Nonce() < s[j].Nonce() }
 func (s TxByNonce) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
-func NewMessage(from operationUtils.Address, to *operationUtils.Address, nonce uint64, amount *big.Int, gasLimit uint64, gasPrice, gasFeeCap, gasTipCap *big.Int, data []byte, isFake bool) Message {
+func NewMessage(from entity.Address, to *entity.Address, nonce uint64, amount *big.Int, gasLimit uint64, gasPrice, gasFeeCap, gasTipCap *big.Int, data []byte, isFake bool) Message {
 	return Message{
 		from:      from,
 		to:        to,
@@ -250,18 +250,18 @@ func NewMessage(from operationUtils.Address, to *operationUtils.Address, nonce u
 	}
 }
 
-func (m Message) From() operationUtils.Address { return m.from }
-func (m Message) To() *operationUtils.Address  { return m.to }
-func (m Message) GasPrice() *big.Int           { return m.gasPrice }
-func (m Message) GasFeeCap() *big.Int          { return m.gasFeeCap }
-func (m Message) GasTipCap() *big.Int          { return m.gasTipCap }
-func (m Message) Value() *big.Int              { return m.amount }
-func (m Message) Gas() uint64                  { return m.gasLimit }
-func (m Message) Nonce() uint64                { return m.nonce }
-func (m Message) Data() []byte                 { return m.data }
-func (m Message) IsFake() bool                 { return m.isFake }
+func (m Message) From() entity.Address { return m.from }
+func (m Message) To() *entity.Address  { return m.to }
+func (m Message) GasPrice() *big.Int   { return m.gasPrice }
+func (m Message) GasFeeCap() *big.Int  { return m.gasFeeCap }
+func (m Message) GasTipCap() *big.Int  { return m.gasTipCap }
+func (m Message) Value() *big.Int      { return m.amount }
+func (m Message) Gas() uint64          { return m.gasLimit }
+func (m Message) Nonce() uint64        { return m.nonce }
+func (m Message) Data() []byte         { return m.data }
+func (m Message) IsFake() bool         { return m.isFake }
 
-func copyAddressPtr(a *operationUtils.Address) *operationUtils.Address {
+func copyAddressPtr(a *entity.Address) *entity.Address {
 	if a == nil {
 		return nil
 	}
@@ -273,10 +273,10 @@ func copyAddressPtr(a *operationUtils.Address) *operationUtils.Address {
 TransactionsByPriceAndNonce表示一组事务，这些事务可以按利润最大化的排序顺序返回事务，同时支持删除不可执行帐户的整批事务。
 */
 type TransactionsByPriceAndNonce struct {
-	txs     map[operationUtils.Address]Transactions // 按帐户即时排序的交易列表
-	heads   TxByPriceAndTime                        // 每个唯一账户的下一笔交易（价格堆）
-	signer  Signer                                  // 事务集的签名者
-	baseFee *big.Int                                // 当前基本费用
+	txs     map[entity.Address]Transactions // 按帐户即时排序的交易列表
+	heads   TxByPriceAndTime                // 每个唯一账户的下一笔交易（价格堆）
+	signer  Signer                          // 事务集的签名者
+	baseFee *big.Int                        // 当前基本费用
 }
 
 // NewTransactionsByPriceAndNonce creates a transaction set that can retrieve
@@ -284,7 +284,7 @@ type TransactionsByPriceAndNonce struct {
 //
 // Note, the input map is reowned so the caller should not interact any more with
 // if after providing it to the constructor.
-func NewTransactionsByPriceAndNonce(signer Signer, txs map[operationUtils.Address]Transactions, baseFee *big.Int) *TransactionsByPriceAndNonce {
+func NewTransactionsByPriceAndNonce(signer Signer, txs map[entity.Address]Transactions, baseFee *big.Int) *TransactionsByPriceAndNonce {
 	// Initialize a price and received time based heap with the head transactions
 	heads := make(TxByPriceAndTime, 0, len(txs))
 	for from, accTxs := range txs {

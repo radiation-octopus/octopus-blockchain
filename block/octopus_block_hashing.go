@@ -2,7 +2,7 @@ package block
 
 import (
 	"bytes"
-	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/utils"
 	"sync"
 )
@@ -24,7 +24,7 @@ type DerivableList interface {
 type TrieHasher interface {
 	Reset()
 	Update([]byte, []byte)
-	Hash() operationUtils.Hash
+	Hash() entity.Hash
 }
 
 func encodeForDerive(list DerivableList, i int, buf *bytes.Buffer) []byte {
@@ -37,7 +37,7 @@ func encodeForDerive(list DerivableList, i int, buf *bytes.Buffer) []byte {
 }
 
 // DeriveSha在块头中创建事务和收据的树哈希。
-func DeriveSha(list DerivableList, hasher TrieHasher) operationUtils.Hash {
+func DeriveSha(list DerivableList, hasher TrieHasher) entity.Hash {
 	hasher.Reset()
 
 	valueBuf := encodeBufferPool.Get().(*bytes.Buffer)

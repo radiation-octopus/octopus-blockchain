@@ -2,7 +2,7 @@ package blockchain
 
 import (
 	"github.com/radiation-octopus/octopus-blockchain/block"
-	"github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/log"
 )
 
@@ -26,7 +26,7 @@ type RemovedLogsEvent struct{ Logs []*log.OctopusLog }
 
 type ChainEvent struct {
 	Block *block.Block
-	Hash  operationUtils.Hash
+	Hash  entity.Hash
 	Logs  []*log.OctopusLog
 }
 

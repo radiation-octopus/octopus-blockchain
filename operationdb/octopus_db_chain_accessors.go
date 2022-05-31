@@ -1,9 +1,9 @@
-package operationDB
+package operationdb
 
 import (
 	"errors"
 	"github.com/radiation-octopus/octopus-blockchain/block"
-	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/db"
 	"github.com/radiation-octopus/octopus/log"
 	"github.com/radiation-octopus/octopus/utils"
@@ -58,12 +58,12 @@ type AncientReader interface {
 }
 
 //检索与哈希对应的块头。
-func ReadHeader(db Reader, hash operationUtils.Hash, number uint64) *block.Header {
+func ReadHeader(db Reader, hash entity.Hash, number uint64) *block.Header {
 	return db.Query(headerMark, utils.GetInToStr(hash))
 }
 
 //检索与哈希对应的body
-func ReadBody(hash operationUtils.Hash, number uint64) *block.Body {
+func ReadBody(hash entity.Hash, number uint64) *block.Body {
 	b := block.Body{}
 	b = db.Query(bodyMark, utils.GetInToStr(hash), b).(block.Body)
 	return &b
@@ -71,7 +71,7 @@ func ReadBody(hash operationUtils.Hash, number uint64) *block.Body {
 
 // ReadBlock检索与哈希相对应的整个块，并将其从存储的标头和正文中组装回来。如果无法检索标头或正文，则返回nil。
 //注意，由于头和块体的并发下载，头和规范哈希可以存储在数据库中，但主体数据（尚未）不能存储。
-func ReadBlock(db Reader, hash operationUtils.Hash, number uint64) *block.Block {
+func ReadBlock(db Reader, hash entity.Hash, number uint64) *block.Block {
 	header := ReadHeader(db, hash, number)
 	if header == nil {
 		return nil
@@ -84,7 +84,7 @@ func ReadBlock(db Reader, hash operationUtils.Hash, number uint64) *block.Block 
 }
 
 // HasBody verifies the existence of a block body corresponding to the hash.
-func HasBody(db Reader, hash operationUtils.Hash, number uint64) bool {
+func HasBody(db Reader, hash entity.Hash, number uint64) bool {
 	//if isCanon(db, number, hash) {
 	//	return true
 	//}
@@ -95,7 +95,7 @@ func HasBody(db Reader, hash operationUtils.Hash, number uint64) bool {
 }
 
 //td新增到数据库
-func WriteTd(db KeyValueWriter, hash operationUtils.Hash, number uint64, td *big.Int) {
+func WriteTd(db KeyValueWriter, hash entity.Hash, number uint64, td *big.Int) {
 	//data, err := rlp.EncodeToBytes(td)
 	//if err != nil {
 	//	log.Crit("Failed to RLP encode block total difficulty", "err", err)
@@ -110,7 +110,7 @@ func WriteBlock(block *block.Block) {
 }
 
 //body新增到数据库
-func WriteBody(hash operationUtils.Hash, body *block.Body) {
+func WriteBody(hash entity.Hash, body *block.Body) {
 	if err := db.Insert(tdMark, utils.GetInToStr(hash), body); err != nil {
 		log.Info("Failed to store block total difficulty")
 	}
@@ -127,7 +127,7 @@ func WriteHeader(header *block.Header) {
 }
 
 //收据新增到数据库
-func WriteReceipts(hash operationUtils.Hash, receipts block.Receipts) {
+func WriteReceipts(hash entity.Hash, receipts block.Receipts) {
 	if err := db.Insert(receiptsMark, utils.GetInToStr(hash), receipts); err != nil {
 		log.Info("Failed to store header")
 	}

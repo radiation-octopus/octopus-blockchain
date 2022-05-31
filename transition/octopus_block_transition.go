@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/block"
-	"github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"math"
 	"math/big"
 
@@ -144,9 +144,9 @@ func (st *StateTransition) preCheck() error {
 }
 
 // 返回接收者
-func (st *StateTransition) to() operationUtils.Address {
+func (st *StateTransition) to() entity.Address {
 	if st.msg.To() == nil /* contract creation */ {
-		return operationUtils.Address{}
+		return entity.Address{}
 	}
 	return *st.msg.To()
 }
@@ -177,7 +177,7 @@ func (st *StateTransition) buyGas() error {
 func IntrinsicGas(data []byte) (uint64, error) {
 	// Set the starting gas for the raw transaction
 	var gas uint64
-	gas = operationUtils.TxGas
+	gas = entity.TxGas
 	//if isContractCreation && isHomestead {
 	//	gas = blockchain.TxGasContractCreation
 	//} else {
@@ -193,7 +193,7 @@ func IntrinsicGas(data []byte) (uint64, error) {
 			}
 		}
 		// 确保所有数据组合不超过uint64
-		nonZeroGas := operationUtils.TxDataNonZeroGasFrontier
+		nonZeroGas := entity.TxDataNonZeroGasFrontier
 		//if isEIP2028 {
 		//	nonZeroGas = blockchain.TxDataNonZeroGasEIP2028
 		//}
@@ -203,10 +203,10 @@ func IntrinsicGas(data []byte) (uint64, error) {
 		gas += nz * nonZeroGas
 
 		z := uint64(len(data)) - nz
-		if (math.MaxUint64-gas)/operationUtils.TxDataZeroGas < z {
+		if (math.MaxUint64-gas)/entity.TxDataZeroGas < z {
 			return 0, errors.New("gas uint64 overflow")
 		}
-		gas += z * operationUtils.TxDataZeroGas
+		gas += z * entity.TxDataZeroGas
 	}
 	return gas, nil
 }

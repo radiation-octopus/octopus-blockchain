@@ -2,14 +2,14 @@ package block
 
 import (
 	"encoding/binary"
-	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
 	"sync/atomic"
 )
 
 var (
-	EmptyRootHash  = operationUtils.BytesToHash(utils.Hex2Bytes("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"))
+	EmptyRootHash  = entity.BytesToHash(utils.Hex2Bytes("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"))
 	EmptyUncleHash = []*Header(nil)
 )
 
@@ -17,12 +17,12 @@ type BlockNonce [8]byte
 
 //区块头结构体
 type Header struct {
-	ParentHash  operationUtils.Hash    `autoInjectCfg:"octopus.blockchain.binding.genesis.header.parentHash"` //父hash
-	UncleHash   operationUtils.Hash    `autoInjectCfg:"octopus.blockchain.binding.genesis.header.uncleHash"`  //叔hash
-	Coinbase    operationUtils.Address //工作者地址值
-	Root        operationUtils.Hash    `autoInjectCfg:"octopus.blockchain.binding.genesis.header.root"`        //根hash
-	TxHash      operationUtils.Hash    `autoInjectCfg:"octopus.blockchain.binding.genesis.header.txhash"`      //交易hash
-	ReceiptHash operationUtils.Hash    `autoInjectCfg:"octopus.blockchain.binding.genesis.header.receiptHash"` //收据hash
+	ParentHash  entity.Hash    `autoInjectCfg:"octopus.blockchain.binding.genesis.header.parentHash"` //父hash
+	UncleHash   entity.Hash    `autoInjectCfg:"octopus.blockchain.binding.genesis.header.uncleHash"`  //叔hash
+	Coinbase    entity.Address //工作者地址值
+	Root        entity.Hash    `autoInjectCfg:"octopus.blockchain.binding.genesis.header.root"`        //根hash
+	TxHash      entity.Hash    `autoInjectCfg:"octopus.blockchain.binding.genesis.header.txhash"`      //交易hash
+	ReceiptHash entity.Hash    `autoInjectCfg:"octopus.blockchain.binding.genesis.header.receiptHash"` //收据hash
 	//Bloom       Bloom
 	Difficulty *big.Int `autoInjectCfg:"octopus.blockchain.binding.genesis.header.difficulty"` //难度值
 	Number     *big.Int `autoInjectCfg:"octopus.blockchain.binding.genesis.header.number"`     //数量
@@ -30,17 +30,17 @@ type Header struct {
 	GasUsed    uint64   `autoInjectCfg:"octopus.blockchain.binding.genesis.header.gasUsed"`    //gas总和
 	Time       uint64   `autoInjectCfg:"octopus.blockchain.binding.genesis.header.time"`       //时间戳
 	//Extra       []byte
-	MixDigest operationUtils.Hash `autoInjectCfg:"octopus.blockchain.binding.genesis.header.mixDigest"` //mixhash
-	Nonce     BlockNonce          `autoInjectCfg:"octopus.blockchain.binding.genesis.header.nonce"`     //唯一标识s
+	MixDigest entity.Hash `autoInjectCfg:"octopus.blockchain.binding.genesis.header.mixDigest"` //mixhash
+	Nonce     BlockNonce  `autoInjectCfg:"octopus.blockchain.binding.genesis.header.nonce"`     //唯一标识s
 
 	//基本费用
 	BaseFee *big.Int `autoInjectCfg:"octopus.blockchain.binding.genesis.header.baseFee"`
 }
 
-func (h *Header) Hash() operationUtils.Hash {
+func (h *Header) Hash() entity.Hash {
 	//哈希运算
 	//return rlpHash(h)
-	return operationUtils.Hash{0}
+	return entity.Hash{0}
 }
 
 //数据容器
@@ -106,13 +106,13 @@ func (b *Block) GasUsed() uint64      { return b.header.GasUsed }
 func (b *Block) Difficulty() *big.Int { return new(big.Int).Set(b.header.Difficulty) }
 func (b *Block) Time() uint64         { return b.header.Time }
 
-func (b *Block) NumberU64() uint64                { return b.header.Number.Uint64() }
-func (b *Block) Nonce() uint64                    { return binary.BigEndian.Uint64(b.header.Nonce[:]) }
-func (b *Block) Root() operationUtils.Hash        { return b.header.Root }
-func (b *Block) ParentHash() operationUtils.Hash  { return b.header.ParentHash }
-func (b *Block) TxHash() operationUtils.Hash      { return b.header.TxHash }
-func (b *Block) ReceiptHash() operationUtils.Hash { return b.header.ReceiptHash }
-func (b *Block) UncleHash() operationUtils.Hash   { return b.header.UncleHash }
+func (b *Block) NumberU64() uint64        { return b.header.Number.Uint64() }
+func (b *Block) Nonce() uint64            { return binary.BigEndian.Uint64(b.header.Nonce[:]) }
+func (b *Block) Root() entity.Hash        { return b.header.Root }
+func (b *Block) ParentHash() entity.Hash  { return b.header.ParentHash }
+func (b *Block) TxHash() entity.Hash      { return b.header.TxHash }
+func (b *Block) ReceiptHash() entity.Hash { return b.header.ReceiptHash }
+func (b *Block) UncleHash() entity.Hash   { return b.header.UncleHash }
 
 func (b *Block) BaseFee() *big.Int {
 	if b.header.BaseFee == nil {
@@ -126,9 +126,9 @@ func (b *Block) Header() *Header { return CopyHeader(b.header) }
 // Body returns the non-header content of the block.
 func (b *Block) Body() *Body { return &Body{b.transactions, b.uncles} }
 
-func (b *Block) Hash() operationUtils.Hash {
+func (b *Block) Hash() entity.Hash {
 	if hash := b.hash.Load(); hash != nil {
-		return hash.(operationUtils.Hash)
+		return hash.(entity.Hash)
 	}
 	v := b.header.Hash()
 	b.hash.Store(v)

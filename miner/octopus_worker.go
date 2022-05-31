@@ -7,8 +7,9 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/blockchain"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
-	"github.com/radiation-octopus/octopus-blockchain/operationDB"
-	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb"
+	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/transition"
 	"github.com/radiation-octopus/octopus/log"
 	"math/big"
@@ -91,17 +92,17 @@ type worker struct {
 
 	wg sync.WaitGroup
 
-	current      *environment                         // 当前工作生命周期执行环境
-	localUncles  map[operationUtils.Hash]*block.Block // 本地分叉区块作为潜在叔块
-	remoteUncles map[operationUtils.Hash]*block.Block // 分叉区块中潜在的叔块
+	current      *environment                 // 当前工作生命周期执行环境
+	localUncles  map[entity.Hash]*block.Block // 本地分叉区块作为潜在叔块
+	remoteUncles map[entity.Hash]*block.Block // 分叉区块中潜在的叔块
 	//unconfirmed  *unconfirmedBlocks           	// 本地产生但尚未被确认的区块
 
 	mu       sync.RWMutex //保护coinbase的锁
-	coinbase operationUtils.Address
+	coinbase entity.Address
 	extra    []byte
 
-	pendingMu    sync.RWMutex                  //队列锁
-	pendingTasks map[operationUtils.Hash]*task //任务map
+	pendingMu    sync.RWMutex          //队列锁
+	pendingTasks map[entity.Hash]*task //任务map
 
 	//snapshotMu       sync.RWMutex // The lock used to protect the snapshots below
 	//snapshotBlock    *block.Block
@@ -133,10 +134,10 @@ func newWorker(config *Config, engine consensus.Engine, oct Backend, init bool) 
 		//mux:                mux,
 		chain: oct.BlockChain(),
 		//isLocalBlock:       isLocalBlock,
-		localUncles:  make(map[operationUtils.Hash]*block.Block),
-		remoteUncles: make(map[operationUtils.Hash]*block.Block),
+		localUncles:  make(map[entity.Hash]*block.Block),
+		remoteUncles: make(map[entity.Hash]*block.Block),
 		//unconfirmed:        newUnconfirmedBlocks(eth.BlockChain(), sealingLogAtDepth),
-		pendingTasks: make(map[operationUtils.Hash]*task),
+		pendingTasks: make(map[entity.Hash]*task),
 		txsCh:        make(chan blockchain.NewTxsEvent, txChanSize),
 		//chainHeadCh:        make(chan core.ChainHeadEvent, chainHeadChanSize),
 		//chainSideCh:        make(chan core.ChainSideEvent, chainSideChanSize),
@@ -200,7 +201,7 @@ func (w *worker) close() {
 }
 
 //setEtherbase设置用于初始化块coinbase字段的etherbase。
-func (w *worker) setEtherbase(addr operationUtils.Address) {
+func (w *worker) setEtherbase(addr entity.Address) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.coinbase = addr
@@ -275,10 +276,10 @@ func (w *worker) mainLoop() {
 			// 如果我们没有密封，则将事务应用到挂起状态注意：收到的所有事务可能与当前密封块中已包含的事务不连续。这些交易将自动消除。
 			if !w.isRunning() && w.current != nil {
 				// 如果块已满，则中止
-				if gp := w.current.gasPool; gp != nil && gp.Gas() < operationUtils.TxGas {
+				if gp := w.current.gasPool; gp != nil && gp.Gas() < entity.TxGas {
 					continue
 				}
-				txs := make(map[operationUtils.Address]block.Transactions)
+				txs := make(map[entity.Address]block.Transactions)
 				for _, tx := range ev.Txs {
 					acc, _ := block.Sender(w.current.signer, tx)
 					txs[acc] = append(txs[acc], tx)
@@ -317,9 +318,9 @@ func (w *worker) commitWork(interrupt *int32, noempty bool, timestamp int64) {
 	start := time.Now()
 
 	// 如果工作进程正在运行或需要，请设置coinbase
-	var coinbase operationUtils.Address
+	var coinbase entity.Address
 	if w.isRunning() {
-		if w.coinbase == (operationUtils.Address{}) {
+		if w.coinbase == (entity.Address{}) {
 			log.Error("Refusing to mine without etherbase")
 			return
 		}
@@ -374,7 +375,7 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 
 	//查找密封任务的父块
 	parent := w.chain.CurrentBlock()
-	if genParams.parentHash != (operationUtils.Hash{}) {
+	if genParams.parentHash != (entity.Hash{}) {
 		parent = w.chain.GetBlockByHash(genParams.parentHash)
 	}
 	if parent == nil {
@@ -402,7 +403,7 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 	//	header.Extra = w.extra
 	//}
 	//从信标链设置随机性字段（如果可用）。
-	if genParams.random != (operationUtils.Hash{}) {
+	if genParams.random != (entity.Hash{}) {
 		header.MixDigest = genParams.random
 	}
 	// 如果我们在EIP-1559链上，请设置baseFee和GasLimit
@@ -426,7 +427,7 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 	}
 	// 只有在允许的情况下，才能为密封工作积累叔叔。
 	//if !genParams.noUncle {
-	//	commitUncles := func(blocks map[operationUtils.Hash]*block.Block) {
+	//	commitUncles := func(blocks map[operationutils.Hash]*block.Block) {
 	//		for hash, uncle := range blocks {
 	//			if len(env.uncles) == 2 {
 	//				break
@@ -446,7 +447,7 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 }
 
 // makeEnv为密封块创建新环境。
-func (w *worker) makeEnv(parent *block.Block, header *block.Header, coinbase operationUtils.Address) (*environment, error) {
+func (w *worker) makeEnv(parent *block.Block, header *block.Header, coinbase entity.Address) (*environment, error) {
 	// 检索要在顶部执行的父状态，并为工作者启动一个预取程序，以加快封块速度。
 	state, err := w.chain.StateAt(parent.Root())
 	if err != nil {
@@ -468,7 +469,7 @@ func (w *worker) makeEnv(parent *block.Block, header *block.Header, coinbase ope
 		ancestors: mapset.NewSet(),
 		family:    mapset.NewSet(),
 		header:    header,
-		uncles:    make(map[operationUtils.Hash]*block.Header),
+		uncles:    make(map[entity.Hash]*block.Header),
 	}
 	// 处理08时，祖先包含07（快速块）
 	for _, ancestor := range w.chain.GetBlocksFromHash(parent.Hash(), 7) {
@@ -527,7 +528,7 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment) error {
 	// 将挂起的事务拆分为本地事务和远程事务
 	//用所有可用的挂起事务填充块。
 	pending := w.oct.TxPool().Pending(true)
-	localTxs, remoteTxs := make(map[operationUtils.Address]block.Transactions), pending
+	localTxs, remoteTxs := make(map[entity.Address]block.Transactions), pending
 	for _, account := range w.oct.TxPool().Locals() {
 		if txs := remoteTxs[account]; len(txs) > 0 {
 			delete(remoteTxs, account)
@@ -777,7 +778,7 @@ func (w *worker) taskLoop() {
 	defer w.wg.Done()
 	var (
 		stopCh chan struct{}
-		prev   operationUtils.Hash
+		prev   entity.Hash
 	)
 
 	// interrupt aborts the in-flight sealing task.
@@ -915,13 +916,13 @@ type getWorkReq struct {
 generateParams包装用于生成密封任务的各种设置。
 */
 type generateParams struct {
-	timestamp  uint64                 // 密封任务的timstamp
-	forceTime  bool                   // 标记给定的时间戳是否不可变
-	parentHash operationUtils.Hash    // 父块哈希，空表示最新链头
-	coinbase   operationUtils.Address // 包含交易的费用接收人地址
-	random     operationUtils.Hash    // 信标链生成的随机性，合并前为空
-	noUncle    bool                   // 标记是否允许包含父块
-	noExtra    bool                   // 标记是否允许额外字段分配
+	timestamp  uint64         // 密封任务的timstamp
+	forceTime  bool           // 标记给定的时间戳是否不可变
+	parentHash entity.Hash    // 父块哈希，空表示最新链头
+	coinbase   entity.Address // 包含交易的费用接收人地址
+	random     entity.Hash    // 信标链生成的随机性，合并前为空
+	noUncle    bool           // 标记是否允许包含父块
+	noExtra    bool           // 标记是否允许额外字段分配
 }
 
 /*
@@ -929,7 +930,7 @@ type generateParams struct {
 */
 type task struct {
 	receipts  []*block.Receipt
-	state     *operationDB.OperationDB
+	state     *operationdb.OperationDB
 	block     *block.Block
 	createdAt time.Time
 }
@@ -948,17 +949,17 @@ type intervalAdjust struct {
 type environment struct {
 	signer block.Signer //签名者
 
-	state     *operationDB.OperationDB // 在此处应用状态更改
+	state     *operationdb.OperationDB // 在此处应用状态更改
 	ancestors mapset.Set               //祖先集（用于检查叔叔父有效性）
 	family    mapset.Set               // family集合（用于检查叔叔是否无效）
 	tcount    int                      // 循环中的tx计数
 	gasPool   *transition.GasPool      //用于包装交易的可用gas
-	coinbase  operationUtils.Address
+	coinbase  entity.Address
 
 	header   *block.Header
 	txs      []*block.Transaction
 	receipts []*block.Receipt
-	uncles   map[operationUtils.Hash]*block.Header
+	uncles   map[entity.Hash]*block.Header
 }
 
 //discard终止后台预取程序go例程。应始终为所有创建的环境实例调用它，否则可能会发生go例程泄漏。
@@ -989,7 +990,7 @@ func (env *environment) copy() *environment {
 	// to do the expensive deep copy for them.
 	cpy.txs = make([]*block.Transaction, len(env.txs))
 	copy(cpy.txs, env.txs)
-	cpy.uncles = make(map[operationUtils.Hash]*block.Header)
+	cpy.uncles = make(map[entity.Hash]*block.Header)
 	for hash, uncle := range env.uncles {
 		cpy.uncles[hash] = uncle
 	}

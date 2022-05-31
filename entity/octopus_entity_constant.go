@@ -1,4 +1,4 @@
-package operationUtils
+package entity
 
 import "github.com/radiation-octopus/octopus/utils"
 

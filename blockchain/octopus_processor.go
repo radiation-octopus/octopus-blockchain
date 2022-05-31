@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
-	"github.com/radiation-octopus/octopus-blockchain/operationDB"
-	"github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/transition"
 	"github.com/radiation-octopus/octopus-blockchain/vm"
 	"github.com/radiation-octopus/octopus/log"
@@ -31,10 +31,10 @@ func NewBlockProcessor(bc *BlockChain, engine consensus.Engine) *BlockProcessor 
 //处理器接口
 type Processor interface {
 	//处理改变区块状态，将区块加入主链
-	Process(block *block.Block, operationdb *operationDB.OperationDB, cfg vm.Config) (block.Receipts, []*log.OctopusLog, uint64, error)
+	Process(block *block.Block, operationdb *operationdb.OperationDB, cfg vm.Config) (block.Receipts, []*log.OctopusLog, uint64, error)
 }
 
-func (p *BlockProcessor) Process(b *block.Block, operationdb *operationDB.OperationDB, cfg vm.Config) (block.Receipts, []*log.OctopusLog, uint64, error) {
+func (p *BlockProcessor) Process(b *block.Block, operationdb *operationdb.OperationDB, cfg vm.Config) (block.Receipts, []*log.OctopusLog, uint64, error) {
 	var (
 		receipts    block.Receipts
 		usedGas     = new(uint64)
@@ -64,7 +64,7 @@ func (p *BlockProcessor) Process(b *block.Block, operationdb *operationDB.Operat
 }
 
 //处理事务
-func applyTransaction(msg block.Message, gp *transition.GasPool, operationdb *operationDB.OperationDB, blockNumber *big.Int, blockHash operationUtils.Hash, tx *block.Transaction, usedGas *uint64, ovm *vm.OVM) (*block.Receipt, error) {
+func applyTransaction(msg block.Message, gp *transition.GasPool, operationdb *operationdb.OperationDB, blockNumber *big.Int, blockHash entity.Hash, tx *block.Transaction, usedGas *uint64, ovm *vm.OVM) (*block.Receipt, error) {
 
 	//将事务应用于当前状态（包含在env中）。
 	result, err := transition.ApplyMessage(msg, gp)
@@ -87,7 +87,7 @@ func applyTransaction(msg block.Message, gp *transition.GasPool, operationdb *op
 // and uses the input parameters for its environment. It returns the receipt
 // for the transaction, gas used and an error if the transaction failed,
 // indicating the block was invalid.
-func ApplyTransaction(bc vm.ChainContext, author *operationUtils.Address, gp *transition.GasPool, statedb *operationDB.OperationDB, header *block.Header, tx *block.Transaction, usedGas *uint64, cfg vm.Config) (*block.Receipt, error) {
+func ApplyTransaction(bc vm.ChainContext, author *entity.Address, gp *transition.GasPool, statedb *operationdb.OperationDB, header *block.Header, tx *block.Transaction, usedGas *uint64, cfg vm.Config) (*block.Receipt, error) {
 	msg, err := tx.AsMessage(block.MakeSigner(header.Number), header.BaseFee)
 	if err != nil {
 		return nil, err

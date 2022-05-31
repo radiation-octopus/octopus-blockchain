@@ -2,18 +2,18 @@ package block
 
 import (
 	"bytes"
-	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/log"
 	"math/big"
 )
 
 //收据代表交易的返回结果
 type Receipt struct {
-	TxHash  operationUtils.Hash
+	TxHash  entity.Hash
 	GasUsed uint64
 	Logs    []*log.OctopusLog
 
-	BlockHash        operationUtils.Hash
+	BlockHash        entity.Hash
 	BlockNumber      *big.Int
 	TransactionIndex uint
 }

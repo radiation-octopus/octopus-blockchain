@@ -1,4 +1,4 @@
-package operationUtils
+package operationutils
 
 // 虚拟机操作码
 type OpCode byte

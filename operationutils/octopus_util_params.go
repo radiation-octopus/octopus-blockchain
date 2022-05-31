@@ -1,4 +1,4 @@
-package operationUtils
+package operationutils
 
 const (
 	GasLimitBoundDivisor uint64 = 1024               // 气体极限的界限除数，用于更新计算。

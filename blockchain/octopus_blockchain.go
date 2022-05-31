@@ -6,7 +6,7 @@ import (
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
-	"github.com/radiation-octopus/octopus-blockchain/operationDB"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/vm"
 	"github.com/radiation-octopus/octopus/log"
 	"math/big"
@@ -21,7 +21,7 @@ const (
 
 //blockchain结构体
 type BlockChain struct {
-	db            operationDB.Database //数据库
+	db            operationdb.Database //数据库
 	txLookupLimit uint64               `autoInjectCfg:"octopus.block.binding.txLookupLimit"` //一个区块容纳最大交易限制
 	hc            *HeaderChain
 	chainHeadFeed Feed
@@ -33,8 +33,8 @@ type BlockChain struct {
 	currentBlock atomic.Value // 当前区块
 	//currentFastBlock atomic.Value	//快速同步链的当前区块
 
-	operationCache operationDB.Database
-	stateCache     operationDB.Database // 要在导入之间重用的状态数据库（包含状态缓存）
+	operationCache operationdb.Database
+	stateCache     operationdb.Database // 要在导入之间重用的状态数据库（包含状态缓存）
 	futureBlocks   *lru.Cache           //新区块缓存区
 	wg             sync.WaitGroup       //同步等待属性
 	quit           chan struct{}        //关闭属性
@@ -95,7 +95,7 @@ func (it *insertIterator) previous() *block.Header {
 //链启动类，配置参数启动
 func (bc *BlockChain) start() {
 	//初始化区块链
-	newBlockChain(operationDB.Database{}, nil, nil)
+	newBlockChain(operationdb.Database{}, nil, nil)
 }
 
 //链终止
@@ -109,7 +109,7 @@ func (bc *BlockChain) GetVMConfig() *vm.Config {
 }
 
 //构建区块链结构体
-func newBlockChain(db operationDB.Database, engine consensus.Engine, shouldPreserve func(header *block.Header) bool) (*BlockChain, error) {
+func newBlockChain(db operationdb.Database, engine consensus.Engine, shouldPreserve func(header *block.Header) bool) (*BlockChain, error) {
 	futureBlocks, _ := lru.New(maxFutureBlocks)
 	bc := &BlockChain{
 		db:   db,
@@ -215,7 +215,7 @@ func (bc *BlockChain) insertChain(chain Blocks, verifySeals, setHead bool) (int,
 	}
 
 	//数据库操作
-	statedb, err := operationDB.New(parent.Root, bc.operationCache)
+	statedb, err := operationdb.New(parent.Root, &bc.operationCache)
 	if err != nil {
 		return it.index, err
 	}
@@ -248,7 +248,7 @@ func newInsertIterator(chain Blocks, results <-chan error, validator Validator) 
 
 // WriteBlockAndSetHead writes the given block and all associated state to the database,
 // and applies the block as the new chain head.
-func (bc *BlockChain) WriteBlockAndSetHead(block *block.Block, receipts []*block.Receipt, logs []*log.OctopusLog, state *operationDB.OperationDB, emitHeadEvent bool) (status WriteStatus, err error) {
+func (bc *BlockChain) WriteBlockAndSetHead(block *block.Block, receipts []*block.Receipt, logs []*log.OctopusLog, state *operationdb.OperationDB, emitHeadEvent bool) (status WriteStatus, err error) {
 	//if !bc.chainmu.TryLock() {
 	//	return NonStatTy, errChainStopped
 	//}
@@ -257,7 +257,7 @@ func (bc *BlockChain) WriteBlockAndSetHead(block *block.Block, receipts []*block
 	return bc.writeBlockAndSetHead(block, receipts, logs, state, emitHeadEvent)
 }
 
-func (bc *BlockChain) writeBlockWithState(block *block.Block, receipts []*block.Receipt, logs []*log.OctopusLog, operation *operationDB.OperationDB) error {
+func (bc *BlockChain) writeBlockWithState(block *block.Block, receipts []*block.Receipt, logs []*log.OctopusLog, operation *operationdb.OperationDB) error {
 	// Calculate the total difficulty of the block
 	ptd := bc.GetTd(block.ParentHash(), block.NumberU64()-1)
 	if ptd == nil {
@@ -271,9 +271,9 @@ func (bc *BlockChain) writeBlockWithState(block *block.Block, receipts []*block.
 	// Note all the components of block(td, hash->number map, header, body, receipts)
 	// should be written atomically. BlockBatch is used for containing all components.
 	//blockBatch := bc.db.NewBatch()
-	operationDB.WriteTd(bc.db, block.Hash(), block.NumberU64(), externTd)
-	operationDB.WriteBlock(block)
-	operationDB.WriteReceipts(block.Hash(), receipts)
+	operationdb.WriteTd(bc.db, block.Hash(), block.NumberU64(), externTd)
+	operationdb.WriteBlock(block)
+	operationdb.WriteReceipts(block.Hash(), receipts)
 	//rawdb.WritePreimages(blockBatch, state.Preimages())
 	//if err := blockBatch.Write(); err != nil {
 	//	log.Crit("Failed to write block into disk", "err", err)
@@ -340,7 +340,7 @@ func (bc *BlockChain) writeBlockWithState(block *block.Block, receipts []*block.
 
 type WriteStatus byte
 
-func (bc *BlockChain) writeBlockAndSetHead(block *block.Block, receipts []*block.Receipt, logs []*log.OctopusLog, state *operationDB.OperationDB, emitHeadEvent bool) (status WriteStatus, err error) {
+func (bc *BlockChain) writeBlockAndSetHead(block *block.Block, receipts []*block.Receipt, logs []*log.OctopusLog, state *operationdb.OperationDB, emitHeadEvent bool) (status WriteStatus, err error) {
 	if err := bc.writeBlockWithState(block, receipts, logs, state); err != nil {
 		return 0, err
 	}

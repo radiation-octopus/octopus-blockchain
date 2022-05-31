@@ -1,7 +1,7 @@
-package operationDB
+package operationdb
 
 import (
-	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/log"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
@@ -10,68 +10,52 @@ import (
 
 type DatabaseI interface {
 	// 打开主帐户trie。
-	OpenTrie(root operationUtils.Hash) (Trie, error)
+	OpenTrie(root entity.Hash) (Trie, error)
 
 	// 打开帐户的存储trie。
-	OpenStorageTrie(addrHash, root operationUtils.Hash) (Trie, error)
+	OpenStorageTrie(addrHash, root entity.Hash) (Trie, error)
 
-	// CopyTrie returns an independent copy of the given trie.
+	// CopyTrie返回给定trie的独立副本。
 	CopyTrie(Trie) Trie
 
-	// ContractCode retrieves a particular contract's code.
-	ContractCode(addrHash, codeHash operationUtils.Hash) ([]byte, error)
+	// ContractCode检索特定合同的代码。
+	ContractCode(addrHash, codeHash entity.Hash) ([]byte, error)
 
-	// ContractCodeSize retrieves a particular contracts code's size.
-	ContractCodeSize(addrHash, codeHash operationUtils.Hash) (int, error)
+	// ContractCodeSize检索特定合同代码的大小。
+	ContractCodeSize(addrHash, codeHash entity.Hash) (int, error)
 
-	// TrieDB retrieves the low level trie database used for data storage.
+	// TrieDB检索用于数据存储的低级trie数据库。
 	TrieDB() *Database
 }
 
 type Trie interface {
-	// GetKey returns the sha3 preimage of a hashed key that was previously used
-	// to store a value.
-	//
-	// TODO(fjl): remove this when SecureTrie is removed
+	// GetKey返回以前用于存储值的哈希键的sha3前映像。
 	GetKey([]byte) []byte
 
-	// TryGet returns the value for key stored in the trie. The value bytes must
-	// not be modified by the caller. If a node was not found in the database, a
-	// trie.MissingNodeError is returned.
+	//TryGet返回存储在trie中的键的值。调用者不得修改值字节。如果在数据库中找不到节点，则会创建一个trie。将返回MissingNodeError。
 	TryGet(key []byte) ([]byte, error)
 
-	// TryUpdateAccount abstract an account write in the trie.
-	TryUpdateAccount(key []byte, account *StateAccount) error
+	// TryUpdateAccount摘要在trie中写入的帐户。
+	TryUpdateAccount(key []byte, account *entity.StateAccount) error
 
-	// TryUpdate associates key with value in the trie. If value has length zero, any
-	// existing value is deleted from the trie. The value bytes must not be modified
-	// by the caller while they are stored in the trie. If a node was not found in the
-	// database, a trie.MissingNodeError is returned.
+	// TryUpdate将键与trie中的值相关联。如果值的长度为零，则会从trie中删除任何现有值。
+	//值字节存储在trie中时，调用者不得修改它们。如果在数据库中找不到节点，则会创建一个trie。将返回MissingNodeError。
 	TryUpdate(key, value []byte) error
 
-	// TryDelete removes any existing value for key from the trie. If a node was not
-	// found in the database, a trie.MissingNodeError is returned.
+	// TryDelete从trie中删除key的所有现有值。如果在数据库中找不到节点，则会创建一个trie。将返回MissingNodeError。
 	TryDelete(key []byte) error
 
-	// Hash returns the root hash of the trie. It does not write to the database and
-	// can be used even if the trie doesn't have one.
-	Hash() operationUtils.Hash
+	// 哈希返回trie的根哈希。它不会写入数据库，即使trie没有数据库，也可以使用它。
+	Hash() entity.Hash
 
-	// Commit writes all nodes to the trie's memory database, tracking the internal
-	// and external (for account tries) references.
+	// Commit将所有节点写入trie的内存数据库，跟踪内部和外部（用于帐户尝试）引用。
 	//Commit(onleaf trie.LeafCallback) (blockchain.Hash, int, error)
 
-	// NodeIterator returns an iterator that returns nodes of the trie. Iteration
-	// starts at the key after the given start key.
+	// NodeIterator返回一个迭代器，该迭代器返回trie的节点。迭代从给定开始键之后的键开始。
 	//NodeIterator(startKey []byte) trie.NodeIterator
 
-	// Prove constructs a Merkle proof for key. The result contains all encoded nodes
-	// on the path to the value at key. The value itself is also included in the last
-	// node and can be retrieved by verifying the proof.
-	//
-	// If the trie does not contain a value for key, the returned proof contains all
-	// nodes of the longest existing prefix of the key (at least the root), ending
-	// with the node that proves the absence of the key.
+	// Prove为key构造了一个Merkle证明。结果包含指向键处值的路径上的所有编码节点。值本身也包含在最后一个节点中，可以通过验证证明来检索。
+	//如果trie不包含key的值，则返回的证明将包含该key现有前缀最长的所有节点（至少是根节点），以证明没有该key的节点结束。
 	//Prove(key []byte, fromLevel uint, proofDb KeyValueWriter) error
 }
 
@@ -79,22 +63,22 @@ type Trie interface {
 type OperationDB struct {
 	db           DatabaseI
 	prefetcher   *triePrefetcher
-	originalRoot operationUtils.Hash //根hash
+	originalRoot entity.Hash //根hash
 	trie         Trie
 	//hasher       crypto.KeccakState
 
-	OperationObjects        map[operationUtils.Address]*OperationObject // 数据库活动对象缓存map集合
-	OperationObjectsPending map[operationUtils.Address]struct{}         //状态对象已完成但尚未写入trie
-	OperationObjectsDirty   map[operationUtils.Address]struct{}         // 当前执行中修改的状态对象
+	OperationObjects        map[entity.Address]*OperationObject // 数据库活动对象缓存map集合
+	OperationObjectsPending map[entity.Address]struct{}         //状态对象已完成但尚未写入trie
+	OperationObjectsDirty   map[entity.Address]struct{}         // 当前执行中修改的状态对象
 
 	dbErr error // 数据库操作错误记录存储
 
-	thash   operationUtils.Hash
+	thash   entity.Hash
 	txIndex int
-	logs    map[operationUtils.Hash][]*log.OctopusLog //日志
+	logs    map[entity.Hash][]*log.OctopusLog //日志
 	logSize uint
 
-	preimages map[operationUtils.Hash][]byte
+	preimages map[entity.Hash][]byte
 
 	accessList *accessList // 事务访问进程列表
 
@@ -118,120 +102,120 @@ type OperationDB struct {
 	//StorageDeleted int
 }
 
-func (o OperationDB) CreateAccount(address operationUtils.Address) {
+func (o *OperationDB) CreateAccount(address entity.Address) {
 
 	panic("implement me")
 }
 
-func (o OperationDB) SubBalance(address operationUtils.Address, b *big.Int) {
+func (o *OperationDB) SubBalance(address entity.Address, b *big.Int) {
 	panic("implement me")
 }
 
-func (o OperationDB) AddBalance(address operationUtils.Address, b *big.Int) {
+func (o *OperationDB) AddBalance(address entity.Address, b *big.Int) {
 	panic("implement me")
 }
 
-func (o OperationDB) GetBalance(address operationUtils.Address) *big.Int {
+func (o *OperationDB) GetBalance(address entity.Address) *big.Int {
 	panic("implement me")
 }
 
-func (o OperationDB) GetNonce(address operationUtils.Address) uint64 {
+func (o *OperationDB) GetNonce(address entity.Address) uint64 {
 	panic("implement me")
 }
 
-func (o OperationDB) SetNonce(address operationUtils.Address, u uint64) {
+func (o *OperationDB) SetNonce(address entity.Address, u uint64) {
 	panic("implement me")
 }
 
-func (o OperationDB) GetCodeHash(address operationUtils.Address) operationUtils.Hash {
+func (o *OperationDB) GetCodeHash(address entity.Address) entity.Hash {
 	panic("implement me")
 }
 
-func (o OperationDB) GetCode(address operationUtils.Address) []byte {
+func (o *OperationDB) GetCode(address entity.Address) []byte {
 	panic("implement me")
 }
 
-func (o OperationDB) SetCode(address operationUtils.Address, bytes []byte) {
+func (o *OperationDB) SetCode(address entity.Address, bytes []byte) {
 	panic("implement me")
 }
 
-func (o OperationDB) GetCodeSize(address operationUtils.Address) int {
+func (o *OperationDB) GetCodeSize(address entity.Address) int {
 	panic("implement me")
 }
 
-func (o OperationDB) AddRefund(u uint64) {
+func (o *OperationDB) AddRefund(u uint64) {
 	panic("implement me")
 }
 
-func (o OperationDB) SubRefund(u uint64) {
+func (o *OperationDB) SubRefund(u uint64) {
 	panic("implement me")
 }
 
-func (o OperationDB) GetRefund() uint64 {
+func (o *OperationDB) GetRefund() uint64 {
 	panic("implement me")
 }
 
-func (o OperationDB) GetCommittedState(address operationUtils.Address, hash operationUtils.Hash) operationUtils.Hash {
+func (o *OperationDB) GetCommittedState(address entity.Address, hash entity.Hash) entity.Hash {
 	panic("implement me")
 }
 
-func (o OperationDB) GetState(address operationUtils.Address, hash operationUtils.Hash) operationUtils.Hash {
+func (o *OperationDB) GetState(address entity.Address, hash entity.Hash) entity.Hash {
 	panic("implement me")
 }
 
-func (o OperationDB) SetState(address operationUtils.Address, hash operationUtils.Hash, hash2 operationUtils.Hash) {
+func (o *OperationDB) SetState(address entity.Address, hash entity.Hash, hash2 entity.Hash) {
 	panic("implement me")
 }
 
-func (o OperationDB) Suicide(address operationUtils.Address) bool {
+func (o *OperationDB) Suicide(address entity.Address) bool {
 	panic("implement me")
 }
 
-func (o OperationDB) HasSuicided(address operationUtils.Address) bool {
+func (o *OperationDB) HasSuicided(address entity.Address) bool {
 	panic("implement me")
 }
 
-func (o OperationDB) Exist(address operationUtils.Address) bool {
+func (o *OperationDB) Exist(address entity.Address) bool {
 	panic("implement me")
 }
 
-func (o OperationDB) Empty(address operationUtils.Address) bool {
+func (o *OperationDB) Empty(address entity.Address) bool {
 	panic("implement me")
 }
 
-func (o OperationDB) AddressInAccessList(addr operationUtils.Address) bool {
+func (o *OperationDB) AddressInAccessList(addr entity.Address) bool {
 	panic("implement me")
 }
 
-func (o OperationDB) SlotInAccessList(addr operationUtils.Address, slot operationUtils.Hash) (addressOk bool, slotOk bool) {
+func (o *OperationDB) SlotInAccessList(addr entity.Address, slot entity.Hash) (addressOk bool, slotOk bool) {
 	panic("implement me")
 }
 
-func (o OperationDB) AddAddressToAccessList(addr operationUtils.Address) {
+func (o *OperationDB) AddAddressToAccessList(addr entity.Address) {
 	panic("implement me")
 }
 
-func (o OperationDB) AddSlotToAccessList(addr operationUtils.Address, slot operationUtils.Hash) {
+func (o *OperationDB) AddSlotToAccessList(addr entity.Address, slot entity.Hash) {
 	panic("implement me")
 }
 
-func (o OperationDB) RevertToSnapshot(i int) {
+func (o *OperationDB) RevertToSnapshot(i int) {
 	panic("implement me")
 }
 
-func (o OperationDB) Snapshot() int {
+func (o *OperationDB) Snapshot() int {
 	panic("implement me")
 }
 
-func (o OperationDB) AddLog(octopusLog *log.OctopusLog) {
+func (o *OperationDB) AddLog(octopusLog *log.OctopusLog) {
 	panic("implement me")
 }
 
-func (o OperationDB) AddPreimage(hash operationUtils.Hash, bytes []byte) {
+func (o *OperationDB) AddPreimage(hash entity.Hash, bytes []byte) {
 	panic("implement me")
 }
 
-func (o OperationDB) ForEachStorage(address operationUtils.Address, f func(operationUtils.Hash, operationUtils.Hash) bool) error {
+func (o *OperationDB) ForEachStorage(address entity.Address, f func(entity.Hash, entity.Hash) bool) error {
 	panic("implement me")
 }
 
@@ -247,13 +231,13 @@ func (o OperationDB) ForEachStorage(address operationUtils.Address, f func(opera
 
 // Prepare sets the current transaction hash and index which are
 // used when the EVM emits new state logs.
-func (s *OperationDB) Prepare(thash operationUtils.Hash, ti int) {
+func (s *OperationDB) Prepare(thash entity.Hash, ti int) {
 	s.thash = thash
 	s.txIndex = ti
 }
 
 //创建根状态数据库
-func New(root operationUtils.Hash, db DatabaseI) (*OperationDB, error) {
+func New(root entity.Hash, db DatabaseI) (*OperationDB, error) {
 	//tr, err := db.OpenTrie(root)
 	//if err != nil {
 	//	return nil, err
@@ -262,9 +246,9 @@ func New(root operationUtils.Hash, db DatabaseI) (*OperationDB, error) {
 		db: db,
 		//trie:             tr,
 		originalRoot:     root,
-		OperationObjects: make(map[operationUtils.Address]*OperationObject),
-		logs:             make(map[operationUtils.Hash][]*log.OctopusLog),
-		preimages:        make(map[operationUtils.Hash][]byte),
+		OperationObjects: make(map[entity.Address]*OperationObject),
+		logs:             make(map[entity.Hash][]*log.OctopusLog),
+		preimages:        make(map[entity.Hash][]byte),
 		accessList:       newAccessList(),
 	}
 	return sdb, nil
@@ -276,13 +260,13 @@ func (s *OperationDB) Copy() *OperationDB {
 	state := &OperationDB{
 		db:                      s.db,
 		trie:                    s.db.CopyTrie(s.trie),
-		OperationObjects:        make(map[operationUtils.Address]*OperationObject, len(s.journal.Dirties)),
-		OperationObjectsPending: make(map[operationUtils.Address]struct{}, len(s.OperationObjectsPending)),
-		OperationObjectsDirty:   make(map[operationUtils.Address]struct{}, len(s.journal.Dirties)),
+		OperationObjects:        make(map[entity.Address]*OperationObject, len(s.journal.Dirties)),
+		OperationObjectsPending: make(map[entity.Address]struct{}, len(s.OperationObjectsPending)),
+		OperationObjectsDirty:   make(map[entity.Address]struct{}, len(s.journal.Dirties)),
 		//refund:              s.refund,
-		logs:      make(map[operationUtils.Hash][]*log.OctopusLog, len(s.logs)),
+		logs:      make(map[entity.Hash][]*log.OctopusLog, len(s.logs)),
 		logSize:   s.logSize,
-		preimages: make(map[operationUtils.Hash][]byte, len(s.preimages)),
+		preimages: make(map[entity.Hash][]byte, len(s.preimages)),
 		journal:   NewJournal(),
 		//hasher:              crypto.NewKeccakState(),
 	}
@@ -361,8 +345,7 @@ func (s *OperationDB) Database() DatabaseI {
 	return s.db
 }
 
-// StopPrefetcher terminates a running prefetcher and reports any leftover stats
-// from the gathered metrics.
+// StopRefetcher终止正在运行的预取程序，并报告收集的度量中的任何剩余统计信息。
 func (s *OperationDB) StopPrefetcher() {
 	if s.prefetcher != nil {
 		//s.prefetcher.close()
@@ -371,7 +354,7 @@ func (s *OperationDB) StopPrefetcher() {
 }
 
 // ReadHeaderNumber返回分配给哈希的标头编号。
-func ReadHeaderNumber(db Database, hash operationUtils.Hash) *big.Int {
+func ReadHeaderNumber(db Database, hash entity.Hash) *big.Int {
 	data := db.Query(headerMark, utils.GetInToStr(hash))
 	int := data.Number
 	return int
@@ -381,8 +364,8 @@ func ReadHeaderNumber(db Database, hash operationUtils.Hash) *big.Int {
 accessList
 */
 type accessList struct {
-	addresses map[operationUtils.Address]int
-	slots     []map[operationUtils.Hash]struct{}
+	addresses map[entity.Address]int
+	slots     []map[entity.Hash]struct{}
 }
 
 // Copy创建访问列表的独立副本。
@@ -391,9 +374,9 @@ func (a *accessList) Copy() *accessList {
 	for k, v := range a.addresses {
 		cp.addresses[k] = v
 	}
-	cp.slots = make([]map[operationUtils.Hash]struct{}, len(a.slots))
+	cp.slots = make([]map[entity.Hash]struct{}, len(a.slots))
 	for i, slotMap := range a.slots {
-		newSlotmap := make(map[operationUtils.Hash]struct{}, len(slotMap))
+		newSlotmap := make(map[entity.Hash]struct{}, len(slotMap))
 		for k := range slotMap {
 			newSlotmap[k] = struct{}{}
 		}
@@ -405,15 +388,15 @@ func (a *accessList) Copy() *accessList {
 //创建集合
 func newAccessList() *accessList {
 	return &accessList{
-		addresses: make(map[operationUtils.Address]int),
+		addresses: make(map[entity.Address]int),
 	}
 }
 
 type triePrefetcher struct {
-	db       Database                            // 用于获取trie节点的数据库
-	root     operationUtils.Hash                 // 度量的Account trie的根哈希
-	fetches  map[operationUtils.Hash]Trie        // 部分或完全获取程序尝试
-	fetchers map[operationUtils.Hash]*subfetcher // 每个trie的Subfetchers
+	db       Database                    // 用于获取trie节点的数据库
+	root     entity.Hash                 // 度量的Account trie的根哈希
+	fetches  map[entity.Hash]Trie        // 部分或完全获取程序尝试
+	fetchers map[entity.Hash]*subfetcher // 每个trie的Subfetchers
 
 	//deliveryMissMeter metrics.Meter
 	//accountLoadMeter  metrics.Meter
@@ -431,7 +414,7 @@ func (p *triePrefetcher) copy() *triePrefetcher {
 	copy := &triePrefetcher{
 		db:      p.db,
 		root:    p.root,
-		fetches: make(map[operationUtils.Hash]Trie), // Active prefetchers use the fetches map
+		fetches: make(map[entity.Hash]Trie), // Active prefetchers use the fetches map
 
 		//deliveryMissMeter: p.deliveryMissMeter,
 		//accountLoadMeter:  p.accountLoadMeter,
@@ -443,14 +426,14 @@ func (p *triePrefetcher) copy() *triePrefetcher {
 		//storageSkipMeter:  p.storageSkipMeter,
 		//storageWasteMeter: p.storageWasteMeter,
 	}
-	// If the prefetcher is already a copy, duplicate the data
+	// 如果预取器已经是副本，请复制数据
 	if p.fetches != nil {
 		//for root, fetch := range p.fetches {
 		//	copy.fetches[root] = p.db.CopyTrie(fetch)
 		//}
 		return copy
 	}
-	// Otherwise we're copying an active fetcher, retrieve the current states
+	// 否则，我们将复制一个活动的抓取程序，检索当前状态
 	for root, fetcher := range p.fetchers {
 		copy.fetches[root] = fetcher.peek()
 	}
@@ -461,21 +444,21 @@ func (p *triePrefetcher) copy() *triePrefetcher {
 
  */
 type subfetcher struct {
-	db   Database            // Database to load trie nodrough
-	root operationUtils.Hash // Root hash of the trie to prefetch
-	trie Trie                // Trie being populated with nodes
+	db   Database    // 要加载trie NodeRough的数据库
+	root entity.Hash // 要预取的trie的根哈希
+	trie Trie        // 正在使用节点填充Trie
 
-	tasks [][]byte   // Items queued up for retrieval
-	lock  sync.Mutex // Lock protecting the task queue
+	tasks [][]byte   // 排队等待检索的项目
+	lock  sync.Mutex // 锁定以保护任务队列
 
-	wake chan struct{}  // Wake channel if a new task is scheduled
-	stop chan struct{}  // Channel to interrupt processing
-	term chan struct{}  // Channel to signal iterruption
-	copy chan chan Trie // Channel to request a copy of the current trie
+	wake chan struct{}  // 如果计划了新任务，则唤醒通道
+	stop chan struct{}  // 中断处理的通道
+	term chan struct{}  // 信号iterruption的通道
+	copy chan chan Trie // 请求当前trie副本的通道
 
-	seen map[string]struct{} // Tracks the entries already loaded
-	dups int                 // Number of duplicate preload tasks
-	used [][]byte            // Tracks the entries used in the end
+	seen map[string]struct{} // 跟踪已加载的条目
+	dups int                 // 重复预加载任务数
+	used [][]byte            // 跟踪最后使用的条目
 }
 
 //peek尝试以当前的任何形式检索fetcher的trie的深度副本。

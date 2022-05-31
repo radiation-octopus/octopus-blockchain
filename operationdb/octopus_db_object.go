@@ -1,56 +1,48 @@
-package operationDB
+package operationdb
 
 import (
-	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
 )
 
 var (
-	// emptyRoot is the known root hash of an empty trie.
-	emptyRoot = operationUtils.BytesToHash(utils.Hex2Bytes("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"))
+	// emptyRoot是空trie的已知根哈希。
+	emptyRoot = entity.BytesToHash(utils.Hex2Bytes("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"))
 )
 
 type Database struct {
 }
 
-func (op Database) OpenTrie(root operationUtils.Hash) (Trie, error) {
+func (op *Database) OpenTrie(root entity.Hash) (Trie, error) {
 	panic("implement me")
 }
 
-func (op Database) OpenStorageTrie(addrHash, root operationUtils.Hash) (Trie, error) {
+func (op *Database) OpenStorageTrie(addrHash, root entity.Hash) (Trie, error) {
 	panic("implement me")
 }
 
-func (op Database) CopyTrie(trie Trie) Trie {
+func (op *Database) CopyTrie(trie Trie) Trie {
 	panic("implement me")
 }
 
-func (op Database) ContractCode(addrHash, codeHash operationUtils.Hash) ([]byte, error) {
+func (op *Database) ContractCode(addrHash, codeHash entity.Hash) ([]byte, error) {
 	panic("implement me")
 }
 
-func (op Database) ContractCodeSize(addrHash, codeHash operationUtils.Hash) (int, error) {
+func (op *Database) ContractCodeSize(addrHash, codeHash entity.Hash) (int, error) {
 	panic("implement me")
 }
 
-func (op Database) TrieDB() *Database {
+func (op *Database) TrieDB() *Database {
 	panic("implement me")
-}
-
-//账户结构体
-type StateAccount struct {
-	Nonce    uint64
-	Balance  *big.Int
-	Root     operationUtils.Hash // 存储trie的merkle根
-	CodeHash []byte
 }
 
 //数据库存储对象
 type OperationObject struct {
-	address  operationUtils.Address
-	addrHash operationUtils.Hash
-	data     StateAccount
+	address  entity.Address
+	addrHash entity.Hash
+	data     entity.StateAccount
 	db       *OperationDB
 
 	code Code // 合同字节码，在加载代码时设置
@@ -58,14 +50,14 @@ type OperationObject struct {
 }
 
 // newObject创建操作对象。
-func newObject(db *OperationDB, address operationUtils.Address, data StateAccount) *OperationObject {
+func newObject(db *OperationDB, address entity.Address, data entity.StateAccount) *OperationObject {
 	if data.Balance == nil {
 		data.Balance = new(big.Int)
 	}
 	//if data.CodeHash == nil {
 	//	data.CodeHash = emptyCodeHash
 	//}
-	if data.Root == (operationUtils.Hash{}) {
+	if data.Root == (entity.Hash{}) {
 		data.Root = emptyRoot
 	}
 	return &OperationObject{

@@ -1,4 +1,4 @@
-package operationUtils
+package operationutils
 
 import "math/big"
 

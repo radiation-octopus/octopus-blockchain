@@ -3,7 +3,7 @@ package blockchain
 import (
 	crand "crypto/rand"
 	"github.com/radiation-octopus/octopus-blockchain/block"
-	"github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"math"
 	"math/big"
 	mrand "math/rand"
@@ -14,7 +14,7 @@ type ChainReader interface {
 	//Config() *params.ChainConfig
 
 	// 返回本地块总难度
-	GetTd(operationUtils.Hash, uint64) *big.Int
+	GetTd(entity.Hash, uint64) *big.Int
 }
 
 type ForkChoice struct {

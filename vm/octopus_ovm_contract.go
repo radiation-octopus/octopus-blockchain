@@ -2,18 +2,19 @@ package vm
 
 import (
 	"errors"
-	"github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"math/big"
 )
 
 type ContractRef interface {
-	Address() operationUtils.Address
+	Address() entity.Address
 }
 
 //合同表示状态数据库中的以太坊合同。它包含合同代码，调用参数。合同执行ContractRef
 type Contract struct {
 	// CallerAddress是初始化此合同的呼叫者的结果
-	CallerAddress operationUtils.Address
+	CallerAddress entity.Address
 	caller        ContractRef
 	self          ContractRef
 
@@ -21,17 +22,17 @@ type Contract struct {
 	//analysis  bitvec                 // Locally cached result of JUMPDEST analysis
 
 	Code     []byte
-	CodeHash operationUtils.Hash
-	CodeAddr *operationUtils.Address
+	CodeHash entity.Hash
+	CodeAddr *entity.Address
 	Input    []byte
 
 	Gas   uint64
 	value *big.Int
 }
 
-type AccountRef operationUtils.Address
+type AccountRef entity.Address
 
-func (ar AccountRef) Address() operationUtils.Address { return (operationUtils.Address)(ar) }
+func (ar AccountRef) Address() entity.Address { return (entity.Address)(ar) }
 
 func (c *Contract) UseGas(gas uint64) (ok bool) {
 	if c.Gas < gas {
@@ -49,7 +50,7 @@ type PrecompiledContract interface {
 type ecrecover struct{}
 
 func (c *ecrecover) RequiredGas(input []byte) uint64 {
-	return operationUtils.EcrecoverGas
+	return operationutils.EcrecoverGas
 }
 func (c *ecrecover) Run(input []byte) ([]byte, error) {
 	const ecRecoverInputLength = 128
@@ -83,7 +84,7 @@ func (c *ecrecover) Run(input []byte) ([]byte, error) {
 	return nil, nil
 }
 
-var PrecompiledContractsHomestead = map[operationUtils.Address]PrecompiledContract{
+var PrecompiledContractsHomestead = map[entity.Address]PrecompiledContract{
 	//blockchain.BytesToAddress([]byte{1}): &ecrecover{},
 	//blockchain.BytesToAddress([]byte{2}): &sha256hash{},
 	//blockchain.BytesToAddress([]byte{3}): &ripemd160hash{},
@@ -100,7 +101,7 @@ func RunPrecompiledContract(p PrecompiledContract, input []byte, suppliedGas uin
 	return output, suppliedGas, err
 }
 
-func (c *Contract) Address() operationUtils.Address {
+func (c *Contract) Address() entity.Address {
 	return c.self.Address()
 }
 
@@ -122,17 +123,17 @@ func NewContract(caller ContractRef, object ContractRef, value *big.Int, gas uin
 	return c
 }
 
-func (c *Contract) SetCallCode(addr *operationUtils.Address, hash operationUtils.Hash, code []byte) {
+func (c *Contract) SetCallCode(addr *entity.Address, hash entity.Hash, code []byte) {
 	c.Code = code
 	c.CodeHash = hash
 	c.CodeAddr = addr
 }
 
 // GetOp returns the n'th element in the contract's byte array
-func (c *Contract) GetOp(n uint64) operationUtils.OpCode {
+func (c *Contract) GetOp(n uint64) operationutils.OpCode {
 	if n < uint64(len(c.Code)) {
-		return operationUtils.OpCode(c.Code[n])
+		return operationutils.OpCode(c.Code[n])
 	}
 
-	return operationUtils.STOP
+	return operationutils.STOP
 }

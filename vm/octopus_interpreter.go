@@ -2,7 +2,8 @@ package vm
 
 import (
 	"errors"
-	"github.com/radiation-octopus/octopus-blockchain/operationUtils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 )
 
 type Config struct {
@@ -22,7 +23,7 @@ type OVMInterpreter struct {
 	cfg Config
 
 	//hasher    keccakState // Keccak256 实例跨操作码共享
-	hasherBuf operationUtils.Hash // Keccak256 hasher 结果数组共享aross操作码
+	hasherBuf entity.Hash // Keccak256 hasher 结果数组共享aross操作码
 
 	readOnly   bool   //是否只读
 	returnData []byte // 最后一次调用的返回数据，以供后续重用
@@ -94,7 +95,7 @@ func (in *OVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	}
 
 	var (
-		op          operationUtils.OpCode // current opcode
+		op          operationutils.OpCode // current opcode
 		mem         = NewMemory()         //绑定内存
 		stack       = newstack()          // 本地堆栈
 		callContext = &ScopeContext{
