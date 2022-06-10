@@ -2,6 +2,7 @@ package block
 
 import (
 	"encoding/binary"
+	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
@@ -14,6 +15,13 @@ var (
 )
 
 type BlockNonce [8]byte
+
+// EncodeNonce将给定整数转换为块nonce。
+func EncodeNonce(i uint64) BlockNonce {
+	var n BlockNonce
+	binary.BigEndian.PutUint64(n[:], i)
+	return n
+}
 
 //区块头结构体
 type Header struct {
@@ -39,8 +47,8 @@ type Header struct {
 
 func (h *Header) Hash() entity.Hash {
 	//哈希运算
-	//return rlpHash(h)
-	return entity.Hash{0}
+	return crypto.RlpHash(h)
+	//return entity.Hash{}
 }
 
 //数据容器
@@ -63,12 +71,12 @@ type Block struct {
 //头中的TxHash、uncleshash、ReceiptHash和Bloom的值将被忽略，并设置为从给定的txs、uncles和receipts派生的值。
 func NewBlock(header *Header, txs []*Transaction, receipts []*Receipt) *Block {
 	b := &Block{header: CopyHeader(header), td: new(big.Int)}
-	var hasher TrieHasher
+	var hasher crypto.TrieHasher
 	// TODO: panic if len(txs) != len(receipts)
 	if len(txs) == 0 {
 		b.header.TxHash = EmptyRootHash
 	} else {
-		b.header.TxHash = DeriveSha(Transactions(txs), hasher)
+		b.header.TxHash = crypto.DeriveSha(Transactions(txs), hasher)
 		b.transactions = make(Transactions, len(txs))
 		copy(b.transactions, txs)
 	}
@@ -76,7 +84,7 @@ func NewBlock(header *Header, txs []*Transaction, receipts []*Receipt) *Block {
 	if len(receipts) == 0 {
 		b.header.ReceiptHash = EmptyRootHash
 	} else {
-		b.header.ReceiptHash = DeriveSha(Receipts(receipts), hasher)
+		b.header.ReceiptHash = crypto.DeriveSha(Receipts(receipts), hasher)
 		//b.header.Bloom = CreateBloom(receipts)
 	}
 

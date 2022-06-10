@@ -12,7 +12,18 @@ import (
 )
 
 var (
-	ErrGasFeeCapTooLow = errors.New("fee cap less than base fee")
+	ErrInvalidSig           = errors.New("invalid transaction v, r, s values")
+	ErrUnexpectedProtection = errors.New("transaction type does not supported EIP-155 protected signatures")
+	ErrInvalidTxType        = errors.New("transaction type not valid in this context")
+	ErrTxTypeNotSupported   = errors.New("transaction type not supported")
+	ErrGasFeeCapTooLow      = errors.New("fee cap less than base fee")
+	errShortTypedTx         = errors.New("typed transaction too short")
+)
+
+const (
+	LegacyTxType = iota
+	AccessListTxType
+	DynamicFeeTxType
 )
 
 type Transaction struct {
@@ -26,6 +37,7 @@ type Transaction struct {
 }
 
 type TxData interface {
+	txType() byte // 返回类型ID
 	copy() TxData // 复制，初始化所以字段
 
 	chainID() *big.Int
@@ -39,8 +51,8 @@ type TxData interface {
 	nonce() uint64
 	to() *entity.Address
 
-	//rawSignatureValues() (v, r, s *big.Int)
-	//setSignatureValues(chainID, v, r, s *big.Int)
+	rawSignatureValues() (v, r, s *big.Int)
+	setSignatureValues(chainID, v, r, s *big.Int)
 }
 
 func (tx *Transaction) Data() []byte { return tx.inner.data() }
@@ -104,6 +116,11 @@ func (tx *Transaction) EffectiveGasTip(baseFee *big.Int) (*big.Int, error) {
 	return BigMin(tx.GasTipCap(), gasFeeCap.Sub(gasFeeCap, baseFee)), err
 }
 
+// 类型返回事务类型。
+func (tx *Transaction) Type() uint8 {
+	return tx.inner.txType()
+}
+
 // Size通过编码并返回事务的真实RLP编码存储大小，或返回以前缓存的值。
 func (tx *Transaction) Size() utils.StorageSize {
 	if size := tx.size.Load(); size != nil {
@@ -120,6 +137,11 @@ func (tx *Transaction) Cost() *big.Int {
 	total := new(big.Int).Mul(tx.GasPrice(), new(big.Int).SetUint64(tx.Gas()))
 	total.Add(total, tx.Value())
 	return total
+}
+
+// RawSignatureValue返回事务的V、R、S签名值。调用者不应修改返回值。
+func (tx *Transaction) RawSignatureValues() (v, r, s *big.Int) {
+	return tx.inner.rawSignatureValues()
 }
 
 type writeCounter utils.StorageSize
@@ -193,6 +215,26 @@ func (s Transactions) Len() int { return len(s) }
 func (s Transactions) EncodeIndex(i int, w *bytes.Buffer) {
 	tx := s[i]
 	tx.encodeTyped(w)
+}
+
+//setDecoded设置解码后的内部事务和大小。
+func (tx *Transaction) setDecoded(inner TxData, size int) {
+	tx.inner = inner
+	tx.time = time.Now()
+	if size > 0 {
+		tx.size.Store(utils.StorageSize(size))
+	}
+}
+
+// WithSignature返回具有给定签名的新事务。此签名需要采用[R | | S | V]格式，其中V为0或1。
+func (tx *Transaction) WithSignature(signer Signer, sig []byte) (*Transaction, error) {
+	r, s, v, err := signer.SignatureValues(tx, sig)
+	if err != nil {
+		return nil, err
+	}
+	cpy := tx.inner.copy()
+	cpy.setSignatureValues(signer.ChainID(), v, r, s)
+	return &Transaction{inner: cpy, time: tx.time}, nil
 }
 
 // TxDifference返回一个新的集合，即a和b之间的差值。
@@ -279,18 +321,15 @@ type TransactionsByPriceAndNonce struct {
 	baseFee *big.Int                        // 当前基本费用
 }
 
-// NewTransactionsByPriceAndNonce creates a transaction set that can retrieve
-// price sorted transactions in a nonce-honouring way.
-//
-// Note, the input map is reowned so the caller should not interact any more with
-// if after providing it to the constructor.
+// NewTransactionsByPriceAndOnce创建一个交易集，该交易集可以以暂时兑现的方式检索按价格排序的交易。
+//注意，输入映射被重新拥有，因此调用方在将其提供给构造函数后不应再与if进行交互。
 func NewTransactionsByPriceAndNonce(signer Signer, txs map[entity.Address]Transactions, baseFee *big.Int) *TransactionsByPriceAndNonce {
-	// Initialize a price and received time based heap with the head transactions
+	// 使用head事务初始化基于价格和接收时间的堆
 	heads := make(TxByPriceAndTime, 0, len(txs))
 	for from, accTxs := range txs {
 		acc, _ := Sender(signer, accTxs[0])
 		wrapped, err := NewTxWithMinerFee(accTxs[0], baseFee)
-		// Remove transaction if sender doesn't match from, or if wrapping fails.
+		// 如果发件人与中的不匹配或包装失败，请删除事务。
 		if acc != from || err != nil {
 			delete(txs, from)
 			continue
@@ -300,7 +339,7 @@ func NewTransactionsByPriceAndNonce(signer Signer, txs map[entity.Address]Transa
 	}
 	heap.Init(&heads)
 
-	// Assemble and return the transaction set
+	// 组装并返回事务集
 	return &TransactionsByPriceAndNonce{
 		txs:     txs,
 		heads:   heads,
@@ -309,7 +348,7 @@ func NewTransactionsByPriceAndNonce(signer Signer, txs map[entity.Address]Transa
 	}
 }
 
-// Peek returns the next transaction by price.
+// Peek按价格返回下一笔交易。
 func (t *TransactionsByPriceAndNonce) Peek() *Transaction {
 	if len(t.heads) == 0 {
 		return nil
@@ -376,4 +415,101 @@ func (s *TxByPriceAndTime) Pop() interface{} {
 	x := old[n-1]
 	*s = old[0 : n-1]
 	return x
+}
+
+//LegacyTx是常规以太坊事务的事务数据。
+type LegacyTx struct {
+	Nonce    uint64          // 发件人帐户的nonce
+	GasPrice *big.Int        // gas价格
+	Gas      uint64          // gas限制
+	To       *entity.Address `rlp:"nil"` // nil表示合同创建
+	Value    *big.Int        // wei金额
+	Data     []byte          // 合同调用输入数据
+	V, R, S  *big.Int        // 签名值
+}
+
+//copy创建事务数据的深度副本并初始化所有字段。
+func (tx *LegacyTx) copy() TxData {
+	cpy := &LegacyTx{
+		Nonce: tx.Nonce,
+		To:    copyAddressPtr(tx.To),
+		Data:  utils.CopyBytes(tx.Data),
+		Gas:   tx.Gas,
+		// These are initialized below.
+		Value:    new(big.Int),
+		GasPrice: new(big.Int),
+		V:        new(big.Int),
+		R:        new(big.Int),
+		S:        new(big.Int),
+	}
+	if tx.Value != nil {
+		cpy.Value.Set(tx.Value)
+	}
+	if tx.GasPrice != nil {
+		cpy.GasPrice.Set(tx.GasPrice)
+	}
+	if tx.V != nil {
+		cpy.V.Set(tx.V)
+	}
+	if tx.R != nil {
+		cpy.R.Set(tx.R)
+	}
+	if tx.S != nil {
+		cpy.S.Set(tx.S)
+	}
+	return cpy
+}
+
+// innerTx的访问器。
+func (tx *LegacyTx) txType() byte      { return LegacyTxType }
+func (tx *LegacyTx) chainID() *big.Int { return deriveChainId(tx.V) }
+
+//func (tx *LegacyTx) accessList() AccessList { return nil }
+func (tx *LegacyTx) data() []byte        { return tx.Data }
+func (tx *LegacyTx) gas() uint64         { return tx.Gas }
+func (tx *LegacyTx) gasPrice() *big.Int  { return tx.GasPrice }
+func (tx *LegacyTx) gasTipCap() *big.Int { return tx.GasPrice }
+func (tx *LegacyTx) gasFeeCap() *big.Int { return tx.GasPrice }
+func (tx *LegacyTx) value() *big.Int     { return tx.Value }
+func (tx *LegacyTx) nonce() uint64       { return tx.Nonce }
+func (tx *LegacyTx) to() *entity.Address { return tx.To }
+
+func (tx *LegacyTx) rawSignatureValues() (v, r, s *big.Int) {
+	return tx.V, tx.R, tx.S
+}
+
+func (tx *LegacyTx) setSignatureValues(chainID, v, r, s *big.Int) {
+	tx.V, tx.R, tx.S = v, r, s
+}
+
+// NewTransaction创建未签名的旧事务。不推荐使用：改用NewTx。
+func NewTransaction(nonce uint64, to entity.Address, amount *big.Int, gasLimit uint64, gasPrice *big.Int, data []byte) *Transaction {
+	return NewTx(&LegacyTx{
+		Nonce:    nonce,
+		To:       &to,
+		Value:    amount,
+		Gas:      gasLimit,
+		GasPrice: gasPrice,
+		Data:     data,
+	})
+}
+
+// NewTx创建一个新事务。
+func NewTx(inner TxData) *Transaction {
+	tx := new(Transaction)
+	tx.setDecoded(inner.copy(), 0)
+	return tx
+}
+
+//deriveChainId从给定的v参数派生链id
+func deriveChainId(v *big.Int) *big.Int {
+	if v.BitLen() <= 64 {
+		v := v.Uint64()
+		if v == 27 || v == 28 {
+			return new(big.Int)
+		}
+		return new(big.Int).SetUint64((v - 35) / 2)
+	}
+	v = new(big.Int).Sub(v, big.NewInt(35))
+	return v.Div(v, big.NewInt(2))
 }

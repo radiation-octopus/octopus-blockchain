@@ -3,7 +3,7 @@ package blockchain
 import (
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
-	"github.com/radiation-octopus/octopus-blockchain/operationutils"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 )
 
 type BlockValidator struct {
@@ -35,10 +35,10 @@ func (v *BlockValidator) validateBody(block *block.Block) error {
 
 //CalcGasLimit计算父块之后的下一个块的gas极限。其目的是保持基线gas接近所提供的目标，如果基线gas较低，则向目标方向增加。
 func CalcGasLimit(parentGasLimit, desiredLimit uint64) uint64 {
-	delta := parentGasLimit/operationutils.GasLimitBoundDivisor - 1
+	delta := parentGasLimit/entity.GasLimitBoundDivisor - 1
 	limit := parentGasLimit
-	if desiredLimit < operationutils.MinGasLimit {
-		desiredLimit = operationutils.MinGasLimit
+	if desiredLimit < entity.MinGasLimit {
+		desiredLimit = entity.MinGasLimit
 	}
 	// 如果我们超出了允许的gas范围，我们会努力向他们靠近
 	if limit < desiredLimit {

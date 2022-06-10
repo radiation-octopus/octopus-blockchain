@@ -62,10 +62,10 @@ func NewOVMInterpreter(ovm *OVM, cfg Config) *OVMInterpreter {
 	//	}
 	//	for i, eip := range cfg.ExtraEips {
 	//		copy := *cfg.JumpTable
-	//		if err := EnableEIP(eip, &copy); err != nil {
+	//		if terr := EnableEIP(eip, &copy); terr != nil {
 	//			// Disable it, so caller can check if it's activated or not
 	//			cfg.ExtraEips = append(cfg.ExtraEips[:i], cfg.ExtraEips[i+1:]...)
-	//			log.Error("EIP activation failed", "eip", eip, "error", err)
+	//			log.Error("EIP activation failed", "eip", eip, "terr", terr)
 	//		}
 	//		cfg.JumpTable = &copy
 	//	}
@@ -152,9 +152,9 @@ func (in *OVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		//	}
 		//	//消耗气体，如果没有足够的气体，则返回错误。显式设置成本，以便捕获状态延迟方法可以获得适当的成本
 		//	var dynamicCost uint64
-		//	dynamicCost, err = operation.dynamicGas(in.evm, contract, stack, mem, memorySize)
+		//	dynamicCost, terr = operation.dynamicGas(in.evm, contract, stack, mem, memorySize)
 		//	cost += dynamicCost // for tracing
-		//	if err != nil || !contract.UseGas(dynamicCost) {
+		//	if terr != nil || !contract.UseGas(dynamicCost) {
 		//		return nil, ErrOutOfGas
 		//	}
 		//	if memorySize > 0 {
@@ -162,7 +162,7 @@ func (in *OVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		//	}
 		//}
 		//if in.cfg.Debug {
-		//	in.cfg.Tracer.CaptureState(pc, op, gasCopy, cost, callContext, in.returnData, in.evm.depth, err)
+		//	in.cfg.Tracer.CaptureState(pc, op, gasCopy, cost, callContext, in.returnData, in.evm.depth, terr)
 		//	logged = true
 		//}
 		// 执行操作码

@@ -6,6 +6,6 @@ type BlockChainStop struct {
 }
 
 func (bc *BlockChainStop) Stop() {
-	Stop()
+	//Stop()
 	fmt.Println("BlockChain stop")
 }

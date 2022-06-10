@@ -50,6 +50,7 @@ octopus:
       prefix: \$
     method:
       prefix: \*
+    port: 8080
 
 
   log:
@@ -70,14 +71,14 @@ octopus:
       color: cyan
       file: debug.log
     info:
-      color: blue
+      color: purple
       file: info.log
     warn:
       color: yellow
       file: warn.log
     error:
       color: red
-      file: error.log
+      file: terr.log
 
   db:
     save:
@@ -88,7 +89,20 @@ octopus:
       create:
         is: true
         num: 1
-
+  console:
+    confirm:
+      is: true
+      confirm: "y"
+      cancel: "n"
+    use:
+      help:
+        is: true
+      exit:
+        is: true
+      back:
+        is: true
+    path:
+      all: \$
   #  链初始配置
   blockchain:
     binding:
@@ -106,4 +120,4 @@ octopus:
           gasUsed: "0x0"
           time: "0x5ddf8f3e"
           nonce: "0x0"
-          #txLookupLimit: 0
+          txLookupLimit: 0

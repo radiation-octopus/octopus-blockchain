@@ -7,4 +7,6 @@ func init() {
 	director.Register(new(OctopusStart))
 	//把停止注入
 	director.Register(new(OctopusStop))
+
+	director.Register(new(Octopus))
 }

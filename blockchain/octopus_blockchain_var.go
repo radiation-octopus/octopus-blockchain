@@ -1,5 +1,7 @@
 package blockchain
 
+import "math/big"
+
 var (
 	//初始交易数量限制
 	TxLookupLimit uint64
@@ -9,4 +11,6 @@ var (
 
 	//blockchain 结构体
 	BindingStruct string
+
+	AllEthashProtocolChanges = &ChainConfig{big.NewInt(1337)}
 )

@@ -3,9 +3,12 @@ package blockchain
 import (
 	"container/heap"
 	"errors"
+	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
+	"github.com/radiation-octopus/octopus-blockchain/terr"
+	"github.com/radiation-octopus/octopus-blockchain/transition"
 	"github.com/radiation-octopus/octopus/log"
 	"github.com/radiation-octopus/octopus/utils"
 	"math"
@@ -32,9 +35,17 @@ const (
 	//txSlotSize用于根据单个事务的大小计算其占用的数据槽数。插槽用作DoS保护，确保验证新事务保持不变（实际上是O（maxslots），其中当前最大插槽为4个）。
 	txSlotSize = 32 * 1024
 
+	// txMaxSize是单个事务可以具有的最大大小。这一领域有着非同寻常的后果：更大的事务更难传播，成本也更高；更大的事务还需要更多的资源来验证它们是否适合池。
+	txMaxSize = 4 * txSlotSize // 128KB
+
 	// urgentRatio:floatingRatio是两个队列的容量比
 	urgentRatio   = 4
 	floatingRatio = 1
+)
+
+var (
+	evictionInterval    = time.Minute     //检查可收回事务的时间间隔
+	statsReportInterval = 8 * time.Second // 报告事务池统计信息的时间间隔
 )
 
 var (
@@ -76,6 +87,20 @@ type SubscriptionScope struct {
 	mu     sync.Mutex
 	subs   map[*scopeSub]struct{}
 	closed bool
+}
+
+//Close calls取消对所有跟踪订阅的订阅，并阻止进一步添加到跟踪集。关闭后跟踪的调用返回nil。
+func (sc *SubscriptionScope) Close() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if sc.closed {
+		return
+	}
+	sc.closed = true
+	for s := range sc.subs {
+		s.s.Unsubscribe()
+	}
+	sc.subs = nil
 }
 
 type scopeSub struct {
@@ -145,11 +170,11 @@ type TxPool struct {
 	reqPromoteCh    chan *accountSet
 	queueTxEventCh  chan *block.Transaction
 	reorgDoneCh     chan chan struct{}
-	reorgShutdownCh chan struct{}  // requests shutdown of scheduleReorgLoop
-	wg              sync.WaitGroup // tracks loop, scheduleReorgLoop
-	initDoneCh      chan struct{}  // is closed once the pool is initialized (for tests)
+	reorgShutdownCh chan struct{}  // 请求关闭scheduleReorgLoop
+	wg              sync.WaitGroup // 轨道运行，scheduleReorgLoop
+	InitDoneCh      chan struct{}  // 池初始化后关闭（用于测试）
 
-	changesSinceReorg int // A counter for how many drops we've performed in-between reorg.
+	changesSinceReorg int // 一个计数器，显示在reorg之间我们执行了多少次下降。
 }
 
 type TxPoolConfig struct {
@@ -224,58 +249,66 @@ func (config *TxPoolConfig) sanitize() TxPoolConfig {
 
 // NewTxPool创建一个新的事务池来收集、排序和过滤网络中的入站事务。
 func NewTxPool(config TxPoolConfig, chain blockChainop) *TxPool {
-	// Sanitize the input to ensure no vulnerable gas prices are set
+	// 清理输入，确保未设定易受影响的gas价格
 	config = (&config).sanitize()
 
 	// 使用事务池的初始设置创建事务池
 	pool := &TxPool{
 		config: config,
 		//chainconfig:     chainconfig,
-		chain: chain,
-		//signer:          types.LatestSigner(chainconfig),
-		pending: make(map[entity.Address]*txList),
-		queue:   make(map[entity.Address]*txList),
-		beats:   make(map[entity.Address]time.Time),
-		//all:             newTxLookup(),
+		chain:           chain,
+		signer:          block.LatestSigner(),
+		pending:         make(map[entity.Address]*txList),
+		queue:           make(map[entity.Address]*txList),
+		beats:           make(map[entity.Address]time.Time),
+		all:             newTxLookup(),
 		chainHeadCh:     make(chan ChainHeadEvent, chainHeadChanSize),
 		reqResetCh:      make(chan *txpoolResetRequest),
 		reqPromoteCh:    make(chan *accountSet),
 		queueTxEventCh:  make(chan *block.Transaction),
 		reorgDoneCh:     make(chan chan struct{}),
 		reorgShutdownCh: make(chan struct{}),
-		initDoneCh:      make(chan struct{}),
+		InitDoneCh:      make(chan struct{}),
 		gasPrice:        new(big.Int).SetUint64(config.PriceLimit),
 	}
-	//pool.locals = newAccountSet(pool.signer)
-	//for _, addr := range config.Locals {
-	//	log.Info("Setting new local account", "address", addr)
-	//	pool.locals.add(addr)
-	//}
+	pool.locals = newAccountSet(pool.signer)
+	for _, addr := range config.Locals {
+		log.Info("Setting new local account", "address", addr)
+		pool.locals.add(addr)
+	}
 	pool.priced = newTxPricedList(pool.all)
-	//pool.reset(nil, chain.CurrentBlock().Header())
+	pool.reset(nil, chain.CurrentBlock().Header())
 
 	// 尽早启动reorg循环，以便它可以处理日志加载期间生成的请求。
 	pool.wg.Add(1)
 	go pool.scheduleReorgLoop()
 
-	// If local transactions and journaling is enabled, load from disk
+	// 如果启用了本地事务和日志记录，则从磁盘加载
 	//if !config.NoLocals && config.Journal != "" {
 	//	pool.journal = newTxJournal(config.Journal)
 	//
-	//	if err := pool.journal.load(pool.AddLocals); err != nil {
-	//		log.Warn("Failed to load transaction journal", "err", err)
+	//	if terr := pool.journal.load(pool.AddLocals); terr != nil {
+	//		log.Warn("Failed to load transaction journal", "terr", terr)
 	//	}
-	//	if err := pool.journal.rotate(pool.local()); err != nil {
-	//		log.Warn("Failed to rotate transaction journal", "err", err)
+	//	if terr := pool.journal.rotate(pool.local()); terr != nil {
+	//		log.Warn("Failed to rotate transaction journal", "terr", terr)
 	//	}
 	//}
 
-	// Subscribe events from blockchain and start the main event loop.
+	// 从区块链订阅事件并启动主事件循环。
 	pool.chainHeadSub = pool.chain.SubscribeChainHeadEvent(pool.chainHeadCh)
 	pool.wg.Add(1)
-	//go pool.loop()
+	go pool.loop()
 
 	return pool
+}
+
+// newTxLookup returns a new txLookup structure.
+func newTxLookup() *txLookup {
+	return &txLookup{
+		locals:  make(map[entity.Hash]*block.Transaction),
+		remotes: make(map[entity.Hash]*block.Transaction),
+	}
 }
 
 func (pool *TxPool) Pending(enforceTips bool) map[entity.Address]block.Transactions {
@@ -328,12 +361,12 @@ func (pool *TxPool) scheduleReorgLoop() {
 		queuedEvents  = make(map[entity.Address]*txSortedMap)
 	)
 	for {
-		// Launch next background reorg if needed
+		// 如果需要，启动下一个后台reorg
 		if curDone == nil && launchNextRun {
-			// Run the background reorg and announcements
+			// 运行后台reorg和公告
 			go pool.runReorg(nextDone, reset, dirtyAccounts, queuedEvents)
 
-			// Prepare everything for the next round of reorg
+			// 为下一轮reorg做好准备
 			curDone, nextDone = nextDone, make(chan struct{})
 			launchNextRun = false
 
@@ -343,7 +376,7 @@ func (pool *TxPool) scheduleReorgLoop() {
 
 		select {
 		case req := <-pool.reqResetCh:
-			// Reset request: update head if request is already pending.
+			// 重置请求：如果请求已挂起，则更新标头。
 			if reset == nil {
 				reset = req
 			} else {
@@ -353,7 +386,7 @@ func (pool *TxPool) scheduleReorgLoop() {
 			pool.reorgDoneCh <- nextDone
 
 		case req := <-pool.reqPromoteCh:
-			// Promote request: update address set if request is already pending.
+			// 升级请求：如果请求已挂起，则更新地址集。
 			if dirtyAccounts == nil {
 				dirtyAccounts = req
 			} else {
@@ -363,8 +396,7 @@ func (pool *TxPool) scheduleReorgLoop() {
 			pool.reorgDoneCh <- nextDone
 
 		case tx := <-pool.queueTxEventCh:
-			// Queue up the event, but don't schedule a reorg. It's up to the caller to
-			// request one later if they want the events sent.
+			// 将事件排队，但不要安排reorg。如果调用方希望发送事件，则由调用方稍后请求。
 			addr, _ := block.Sender(pool.signer, tx)
 			if _, ok := queuedEvents[addr]; !ok {
 				queuedEvents[addr] = newTxSortedMap()
@@ -375,7 +407,7 @@ func (pool *TxPool) scheduleReorgLoop() {
 			curDone = nil
 
 		case <-pool.reorgShutdownCh:
-			// Wait for current run to finish.
+			// 等待当前运行完成。
 			if curDone != nil {
 				<-curDone
 			}
@@ -410,7 +442,7 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 				delete(events, addr)
 			}
 		}
-		// Reset needs promote for all addresses
+		// 重置所有地址需要升级
 		promoteAddrs = make([]entity.Address, 0, len(pool.queue))
 		for addr := range pool.queue {
 			promoteAddrs = append(promoteAddrs, addr)
@@ -527,7 +559,7 @@ func (pool *TxPool) reset(oldHead, newHead *block.Header) {
 	}
 	statedb, err := pool.chain.StateAt(newHead.Root)
 	if err != nil {
-		log.Error("Failed to reset txpool state", "err", err)
+		log.Error("Failed to reset txpool state", "terr", err)
 		return
 	}
 	pool.currentState = statedb
@@ -558,93 +590,89 @@ func (pool *TxPool) add(tx *block.Transaction, local bool) (replaced bool, err e
 		return false, ErrAlreadyKnown
 	}
 	// 制作本地标志。如果它来自本地源或来自网络，但发送方之前标记为本地，则将其视为本地事务。
-	//isLocal := local || pool.locals.containsTx(tx)
+	isLocal := local || pool.locals.containsTx(tx)
 
-	// If the transaction fails basic validation, discard it
-	//if err := pool.validateTx(tx, isLocal); err != nil {
-	//	log.Trace("Discarding invalid transaction", "hash", hash, "err", err)
-	//	invalidTxMeter.Mark(1)
-	//	return false, err
-	//}
-	//// If the transaction pool is full, discard underpriced transactions
-	//if uint64(pool.all.Slots()+numSlots(tx)) > pool.config.GlobalSlots+pool.config.GlobalQueue {
-	//	// If the new transaction is underpriced, don't accept it
-	//	if !isLocal && pool.priced.Underpriced(tx) {
-	//		log.Trace("Discarding underpriced transaction", "hash", hash, "gasTipCap", tx.GasTipCap(), "gasFeeCap", tx.GasFeeCap())
-	//		underpricedTxMeter.Mark(1)
-	//		return false, ErrUnderpriced
-	//	}
-	//	// We're about to replace a transaction. The reorg does a more thorough
-	//	// analysis of what to remove and how, but it runs async. We don't want to
-	//	// do too many replacements between reorg-runs, so we cap the number of
-	//	// replacements to 25% of the slots
-	//	if pool.changesSinceReorg > int(pool.config.GlobalSlots/4) {
-	//		throttleTxMeter.Mark(1)
-	//		return false, ErrTxPoolOverflow
-	//	}
-	//
-	//	// New transaction is better than our worse ones, make room for it.
-	//	// If it's a local transaction, forcibly discard all available transactions.
-	//	// Otherwise if we can't make enough room for new one, abort the operation.
-	//	drop, success := pool.priced.Discard(pool.all.Slots()-int(pool.config.GlobalSlots+pool.config.GlobalQueue)+numSlots(tx), isLocal)
-	//
-	//	// Special case, we still can't make the room for the new remote one.
-	//	if !isLocal && !success {
-	//		log.Trace("Discarding overflown transaction", "hash", hash)
-	//		overflowedTxMeter.Mark(1)
-	//		return false, ErrTxPoolOverflow
-	//	}
-	//	// Bump the counter of rejections-since-reorg
-	//	pool.changesSinceReorg += len(drop)
-	//	// Kick out the underpriced remote transactions.
-	//	for _, tx := range drop {
-	//		log.Trace("Discarding freshly underpriced transaction", "hash", tx.Hash(), "gasTipCap", tx.GasTipCap(), "gasFeeCap", tx.GasFeeCap())
-	//		underpricedTxMeter.Mark(1)
-	//		pool.removeTx(tx.Hash(), false)
-	//	}
-	//}
-	//// Try to replace an existing transaction in the pending pool
-	//from, _ := types.Sender(pool.signer, tx) // already validated
-	//if list := pool.pending[from]; list != nil && list.Overlaps(tx) {
-	//	// Nonce already pending, check if required price bump is met
-	//	inserted, old := list.Add(tx, pool.config.PriceBump)
-	//	if !inserted {
-	//		pendingDiscardMeter.Mark(1)
-	//		return false, ErrReplaceUnderpriced
-	//	}
-	//	// New transaction is better, replace old one
-	//	if old != nil {
-	//		pool.all.Remove(old.Hash())
-	//		pool.priced.Removed(1)
-	//		pendingReplaceMeter.Mark(1)
-	//	}
-	//	pool.all.Add(tx, isLocal)
-	//	pool.priced.Put(tx, isLocal)
-	//	pool.journalTx(from, tx)
-	//	pool.queueTxEvent(tx)
-	//	log.Trace("Pooled new executable transaction", "hash", hash, "from", from, "to", tx.To())
-	//
-	//	// Successful promotion, bump the heartbeat
-	//	pool.beats[from] = time.Now()
-	//	return old != nil, nil
-	//}
-	//// New transaction isn't replacing a pending one, push into queue
-	//replaced, err = pool.enqueueTx(hash, tx, isLocal, true)
-	//if err != nil {
-	//	return false, err
-	//}
-	//// Mark local addresses and journal local transactions
-	//if local && !pool.locals.contains(from) {
-	//	log.Info("Setting new local account", "address", from)
-	//	pool.locals.add(from)
-	//	pool.priced.Removed(pool.all.RemoteToLocals(pool.locals)) // Migrate the remotes if it's marked as local first time.
-	//}
-	//if isLocal {
-	//	localGauge.Inc(1)
-	//}
-	//pool.journalTx(from, tx)
+	//如果事务未通过基本验证，请放弃它
+	if err := pool.validateTx(tx, isLocal); err != nil {
+		log.Info("Discarding invalid transaction", "hash", hash, "terr", err)
+		//invalidTxMeter.Mark(1)
+		return false, err
+	}
+	// 如果交易池已满，则放弃定价过低的交易
+	if uint64(pool.all.Slots()+numSlots(tx)) > pool.config.GlobalSlots+pool.config.GlobalQueue {
+		// 如果新交易定价过低，请不要接受
+		if !isLocal && pool.priced.Underpriced(tx) {
+			log.Info("Discarding underpriced transaction", "hash", hash, "gasTipCap", tx.GasTipCap(), "gasFeeCap", tx.GasFeeCap())
+			//underpricedTxMeter.Mark(1)
+			return false, ErrUnderpriced
+		}
+		//我们即将替换一笔交易。reorg对删除什么以及如何删除进行了更彻底的分析，但它是异步运行的。我们不想在reorg运行之间进行太多替换，因此我们将替换数量限制为插槽的25%
+		if pool.changesSinceReorg > int(pool.config.GlobalSlots/4) {
+			//throttleTxMeter.Mark(1)
+			return false, ErrTxPoolOverflow
+		}
 
-	//log.Info("Pooled new future transaction", "hash", hash, "from", from, "to", tx.To())
+		// 新的交易比我们最糟糕的交易要好，给它腾出空间吧。如果是本地事务，则强制放弃所有可用事务。
+		//否则，如果我们不能为新的留出足够的空间，请中止操作。
+		drop, success := pool.priced.Discard(pool.all.Slots()-int(pool.config.GlobalSlots+pool.config.GlobalQueue)+numSlots(tx), isLocal)
+
+		// 特殊情况下，我们仍然无法为新的tx腾出空间。
+		if !isLocal && !success {
+			log.Info("Discarding overflown transaction", "hash", hash)
+			//overflowedTxMeter.Mark(1)
+			return false, ErrTxPoolOverflow
+		}
+		// 增加reorg后的拒绝计数
+		pool.changesSinceReorg += len(drop)
+		// 取消定价过低的远程交易。
+		for _, tx := range drop {
+			log.Info("Discarding freshly underpriced transaction", "hash", tx.Hash(), "gasTipCap", tx.GasTipCap(), "gasFeeCap", tx.GasFeeCap())
+			//underpricedTxMeter.Mark(1)
+			pool.removeTx(tx.Hash(), false)
+		}
+	}
+	// 尝试替换挂起池中的现有事务
+	from, _ := block.Sender(pool.signer, tx) // 已验证
+	if list := pool.pending[from]; list != nil && list.Overlaps(tx) {
+		// 暂挂，检查是否满足所需的涨价要求
+		inserted, old := list.Add(tx, pool.config.PriceBump)
+		if !inserted {
+			//pendingDiscardMeter.Mark(1)
+			return false, ErrReplaceUnderpriced
+		}
+		// 新交易更好，替换旧交易
+		if old != nil {
+			pool.all.Remove(old.Hash())
+			pool.priced.Removed(1)
+			//pendingReplaceMeter.Mark(1)
+		}
+		pool.all.Add(tx, isLocal)
+		pool.priced.Put(tx, isLocal)
+		pool.journalTx(from, tx)
+		pool.queueTxEvent(tx)
+		log.Info("Pooled new executable transaction", "hash", hash, "from", from, "to", tx.To())
+
+		// 成功升级，心跳加速
+		pool.beats[from] = time.Now()
+		return old != nil, nil
+	}
+	// 新事务未替换挂起的事务，请推入队列
+	replaced, err = pool.enqueueTx(hash, tx, isLocal, true)
+	if err != nil {
+		return false, err
+	}
+	// 标记本地地址和日志本地事务
+	if local && !pool.locals.contains(from) {
+		log.Info("Setting new local account", "address", from)
+		pool.locals.add(from)
+		pool.priced.Removed(pool.all.RemoteToLocals(pool.locals)) // 如果第一次标记为本地，则迁移远程设备。
+	}
+	if isLocal {
+		//localGauge.Inc(1)
+	}
+	pool.journalTx(from, tx)
+
+	log.Info("Pooled new future transaction", "hash", hash, "from", from, "to", tx.To())
 	return replaced, nil
 }
 
@@ -657,7 +685,7 @@ func (pool *TxPool) promoteExecutables(accounts []entity.Address) []*block.Trans
 	for _, addr := range accounts {
 		list := pool.queue[addr]
 		if list == nil {
-			continue // 以防有人用不存在的帐户打电话
+			continue // 以防有人用不存在的帐户call
 		}
 		// 删除所有被认为太旧的事务（低nonce）
 		forwards := list.Forward(pool.currentState.GetNonce(addr))
@@ -666,7 +694,7 @@ func (pool *TxPool) promoteExecutables(accounts []entity.Address) []*block.Trans
 			pool.all.Remove(hash)
 		}
 		log.Info("Removed old queued transactions", "count", len(forwards))
-		// Drop all transactions that are too costly (low balance or out of gas)
+		// 放弃所有成本过高的交易（余额不足或gas不足）
 		drops, _ := list.Filter(pool.currentState.GetBalance(addr), pool.currentMaxGas)
 		for _, tx := range drops {
 			hash := tx.Hash()
@@ -1018,6 +1046,81 @@ func (pool *TxPool) removeTx(hash entity.Hash, outofbound bool) {
 	}
 }
 
+// AddRemote将单个事务排队到池中（如果该事务有效）。
+//这是一个围绕AddRemotes的方便包装器。不推荐使用：使用AddRemotes
+func (pool *TxPool) AddRemote(tx *block.Transaction) error {
+	errs := pool.AddRemotes([]*block.Transaction{tx})
+	return errs[0]
+}
+
+// AddRemotes将一批有效的事务排入池中。
+//如果发件人不在本地跟踪的发件人中，则将应用完整的定价约束。
+//此方法用于从p2p网络添加事务，不等待池重组和内部事件传播。
+func (pool *TxPool) AddRemotes(txs []*block.Transaction) []error {
+	return pool.addTxs(txs, false, false)
+}
+
+// AddLocals将一批有效的事务排入池中，将发件人标记为本地发件人，确保他们绕过本地定价限制。
+//此方法用于从RPC API添加事务，并执行同步池重组和事件传播。
+func (pool *TxPool) AddLocals(txs []*block.Transaction) []error {
+	return pool.addTxs(txs, !pool.config.NoLocals, true)
+}
+
+// AddLocal将单个本地事务排入池（如果有效）。这是一个围绕AddLocals的方便包装器。
+func (pool *TxPool) AddLocal(tx *block.Transaction) error {
+	errs := pool.AddLocals([]*block.Transaction{tx})
+	return errs[0]
+}
+
+// addTxs尝试将一批有效的事务排队。
+func (pool *TxPool) addTxs(txs []*block.Transaction, local, sync bool) []error {
+	// 在不获取池锁或恢复签名的情况下筛选出已知的池
+	var (
+		errs = make([]error, len(txs))
+		news = make([]*block.Transaction, 0, len(txs))
+	)
+	for i, tx := range txs {
+		// 如果已知事务，请预先设置错误槽
+		if pool.all.Get(tx.Hash()) != nil {
+			errs[i] = ErrAlreadyKnown
+			//knownTxMeter.Mark(1)
+			continue
+		}
+		// 尽快排除具有无效签名的事务，并在获取锁之前在事务中缓存发件人
+		_, err := block.Sender(pool.signer, tx)
+		if err != nil {
+			errs[i] = ErrInvalidSender
+			//invalidTxMeter.Mark(1)
+			continue
+		}
+		// 累积所有未知事务以进行更深入的处理
+		news = append(news, tx)
+	}
+	if len(news) == 0 {
+		return errs
+	}
+
+	// 处理所有新事务并将所有错误合并到原始切片中
+	pool.mu.Lock()
+	newErrs, dirtyAddrs := pool.addTxsLocked(news, local)
+	pool.mu.Unlock()
+
+	var nilSlot = 0
+	for _, err := range newErrs {
+		for errs[nilSlot] != nil {
+			nilSlot++
+		}
+		errs[nilSlot] = err
+		nilSlot++
+	}
+	// 如果需要，重新标记池内构件并返回
+	done := pool.requestPromoteExecutables(dirtyAddrs)
+	if sync {
+		<-done
+	}
+	return errs
+}
+
 //addTxsLocked尝试将一批有效的事务排队。必须持有事务池锁。
 func (pool *TxPool) addTxsLocked(txs []*block.Transaction, local bool) ([]error, *accountSet) {
 	dirty := newAccountSet(pool.signer)
@@ -1026,11 +1129,217 @@ func (pool *TxPool) addTxsLocked(txs []*block.Transaction, local bool) ([]error,
 		replaced, err := pool.add(tx, local)
 		errs[i] = err
 		if err == nil && !replaced {
-			//dirty.addTx(tx)
+			dirty.addTx(tx)
 		}
 	}
 	//validTxMeter.Mark(int64(len(dirty.accounts)))
 	return errs, dirty
+}
+
+// validateTx根据一致性规则检查事务是否有效，并遵守本地节点的一些启发式限制（价格和大小）。
+func (pool *TxPool) validateTx(tx *block.Transaction, local bool) error {
+	//在EIP-2718/2930激活之前，仅接受旧事务。
+	if !pool.eip2718 && tx.Type() != block.LegacyTxType {
+		return terr.ErrTxTypeNotSupported
+	}
+	//拒绝动态费用交易，直到EIP-1559激活。
+	if !pool.eip1559 && tx.Type() == block.DynamicFeeTxType {
+		return terr.ErrTxTypeNotSupported
+	}
+	// 拒绝超过定义大小的事务以防止DOS攻击
+	if uint64(tx.Size()) > txMaxSize {
+		return ErrOversizedData
+	}
+	// 交易不能为负。使用RLP解码事务可能永远不会发生这种情况，但如果使用RPC创建事务，则可能会发生这种情况。
+	if tx.Value().Sign() < 0 {
+		return ErrNegativeValue
+	}
+	// 确保交易不超过当前区块限制gas。
+	if pool.currentMaxGas < tx.Gas() {
+		return ErrGasLimit
+	}
+	// 超大数字的健全性检查
+	if tx.GasFeeCap().BitLen() > 256 {
+		return terr.ErrFeeCapVeryHigh
+	}
+	if tx.GasTipCap().BitLen() > 256 {
+		return terr.ErrTipVeryHigh
+	}
+	// 确保gasFeeCap大于或等于gasticap。
+	if tx.GasFeeCapIntCmp(tx.GasTipCap()) < 0 {
+		return terr.ErrTipAboveFeeCap
+	}
+	// 确保交易签名正确。
+	from, err := block.Sender(pool.signer, tx)
+	if err != nil {
+		return ErrInvalidSender
+	}
+	// 以我们自己的最低可接受gas价格或tip放弃非本地交易
+	if !local && tx.GasTipCapIntCmp(pool.gasPrice) < 0 {
+		return ErrUnderpriced
+	}
+	// 确保事务符合nonce排序
+	if pool.currentState.GetNonce(from) > tx.Nonce() {
+		return terr.ErrNonceTooLow
+	}
+	//交易人应有足够的资金支付成本     成本==V+GP*GL
+	if pool.currentState.GetBalance(from).Cmp(tx.Cost()) < 0 {
+		return terr.ErrInsufficientFunds
+	}
+	// 确保交易的gas比基本的tx费用多。
+	intrGas, err := transition.IntrinsicGas(tx.Data())
+	if err != nil {
+		return err
+	}
+	if tx.Gas() < intrGas {
+		return terr.ErrIntrinsicGas
+	}
+	return nil
+}
+
+// journalTx将指定的事务添加到本地磁盘日志中，如果它被视为是从本地帐户发送的。
+func (pool *TxPool) journalTx(from entity.Address, tx *block.Transaction) {
+	// 仅当日志已启用且事务为本地事务时
+	//if pool.journal == nil || !pool.locals.contains(from) {
+	//	return
+	//}
+	//if err := pool.journal.insert(tx); err != nil {
+	//	log.Warn("Failed to journal local transaction", "err", err)
+	//}
+}
+
+// queueTxEvent将要在下一次reorg运行中发送的事务事件排入队列。
+func (pool *TxPool) queueTxEvent(tx *block.Transaction) {
+	select {
+	case pool.queueTxEventCh <- tx:
+	case <-pool.reorgShutdownCh:
+	}
+}
+
+// 循环是交易池的主要事件循环，等待外部区块链事件以及各种报告和交易逐出事件并对其作出反应。
+func (pool *TxPool) loop() {
+	defer pool.wg.Done()
+
+	var (
+		prevPending, prevQueued, prevStales int
+		// 启动统计报告和事务逐出计时器
+		report  = time.NewTicker(statsReportInterval)
+		evict   = time.NewTicker(evictionInterval)
+		journal = time.NewTicker(pool.config.Rejournal)
+		// 跟踪事务REORG的以前标头
+		head = pool.chain.CurrentBlock()
+	)
+	defer report.Stop()
+	defer evict.Stop()
+	defer journal.Stop()
+
+	// 通知测试初始化阶段已完成
+	close(pool.InitDoneCh)
+	for {
+		fmt.Println("循环处理chainhead")
+		select {
+		// 处理ChainHeadEvent
+		case ev := <-pool.chainHeadCh:
+			if ev.Block != nil {
+				pool.requestReset(head.Header(), ev.Block.Header())
+				head = ev.Block
+			}
+
+		// 系统停止
+		case <-pool.chainHeadSub.Err():
+			close(pool.reorgShutdownCh)
+			return
+
+		// 处理统计数据报告记号
+		case <-report.C:
+			pool.mu.RLock()
+			pending, queued := pool.stats()
+			pool.mu.RUnlock()
+			stales := int(atomic.LoadInt64(&pool.priced.stales))
+
+			if pending != prevPending || queued != prevQueued || stales != prevStales {
+				log.Debug("Transaction pool status report", "executable", pending, "queued", queued, "stales", stales)
+				prevPending, prevQueued, prevStales = pending, queued, stales
+			}
+
+		// 处理非活动帐户事务逐出
+		case <-evict.C:
+			pool.mu.Lock()
+			for addr := range pool.queue {
+				// 从逐出机制跳过本地事务
+				if pool.locals.contains(addr) {
+					continue
+				}
+				// 应移除年龄足够大的非本地人
+				if time.Since(pool.beats[addr]) > pool.config.Lifetime {
+					list := pool.queue[addr].Flatten()
+					for _, tx := range list {
+						pool.removeTx(tx.Hash(), true)
+					}
+					//queuedEvictionMeter.Mark(int64(len(list)))
+				}
+			}
+			pool.mu.Unlock()
+
+			// 处理本地事务日志循环
+			//case <-journal.C:
+			//	if pool.journal != nil {
+			//		pool.mu.Lock()
+			//		if err := pool.journal.rotate(pool.local()); err != nil {
+			//			log.Warn("Failed to rotate local tx journal", "err", err)
+			//		}
+			//		pool.mu.Unlock()
+			//	}
+		}
+	}
+}
+
+//requestReset请求将池重置为新的头块。重置发生时，返回的通道关闭。
+func (pool *TxPool) requestReset(oldHead *block.Header, newHead *block.Header) chan struct{} {
+	select {
+	case pool.reqResetCh <- &txpoolResetRequest{oldHead, newHead}:
+		return <-pool.reorgDoneCh
+	case <-pool.reorgShutdownCh:
+		return pool.reorgShutdownCh
+	}
+}
+
+//stats检索当前池的统计信息，即挂起的事务数和排队（不可执行）的事务数。
+func (pool *TxPool) stats() (int, int) {
+	pending := 0
+	for _, list := range pool.pending {
+		pending += list.Len()
+	}
+	queued := 0
+	for _, list := range pool.queue {
+		queued += list.Len()
+	}
+	return pending, queued
+}
+
+// equestPromoteExecutables请求对给定地址进行事务提升检查。升级检查完成后，返回的通道将关闭。
+func (pool *TxPool) requestPromoteExecutables(set *accountSet) chan struct{} {
+	select {
+	case pool.reqPromoteCh <- set:
+		return <-pool.reorgDoneCh
+	case <-pool.reorgShutdownCh:
+		return pool.reorgShutdownCh
+	}
+}
+
+// Stop终止事务池。
+func (pool *TxPool) Stop() {
+	// 取消订阅从txpool注册的所有订阅
+	pool.scope.Close()
+
+	// 取消订阅从区块链注册的订阅
+	pool.chainHeadSub.Unsubscribe()
+	pool.wg.Wait()
+
+	//if pool.journal != nil {
+	//	pool.journal.close()
+	//}
+	log.Info("Transaction pool stopped")
 }
 
 // addressByHeartbeat是一个带有最后一个活动时间戳的帐户地址。
@@ -1086,6 +1395,13 @@ func (as *accountSet) containsTx(tx *block.Transaction) bool {
 func (as *accountSet) add(addr entity.Address) {
 	as.accounts[addr] = struct{}{}
 	as.cache = nil
+}
+
+//addTx将tx的发送方添加到集合中。
+func (as *accountSet) addTx(tx *block.Transaction) {
+	if addr, err := block.Sender(as.signer, tx); err == nil {
+		as.add(addr)
+	}
 }
 
 // newAccountSet为发件人派生创建一个新的地址集，该地址集具有关联的签名者。
@@ -1295,6 +1611,11 @@ func (l *txList) Remove(tx *block.Transaction) (bool, block.Transactions) {
 		return true, l.txs.Filter(func(tx *block.Transaction) bool { return tx.Nonce() > nonce })
 	}
 	return true, nil
+}
+
+//重叠返回指定的事务是否与列表中已包含的事务具有相同的nonce。
+func (l *txList) Overlaps(tx *block.Transaction) bool {
+	return l.txs.Get(tx.Nonce()) != nil
 }
 
 // newTxPricedList创建一个新的按价格排序的事务堆。
@@ -1589,6 +1910,38 @@ func (t *txLookup) Get(hash entity.Hash) *block.Transaction {
 	return t.remotes[hash]
 }
 
+// Slots返回查找中使用的当前插槽数。
+func (t *txLookup) Slots() int {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+
+	return t.slots
+}
+
+//GetRemote如果在查找中存在事务，则返回事务；如果未找到事务，则返回nil。
+func (t *txLookup) GetRemote(hash entity.Hash) *block.Transaction {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+
+	return t.remotes[hash]
+}
+
+// RemoteToLocals将属于给定局部变量集的事务迁移到局部变量集。假设使用的局部变量集是线程安全的。
+func (t *txLookup) RemoteToLocals(locals *accountSet) int {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	var migrated int
+	for hash, tx := range t.remotes {
+		if locals.containsTx(tx) {
+			t.locals[hash] = tx
+			delete(t.remotes, hash)
+			migrated += 1
+		}
+	}
+	return migrated
+}
+
 // numSlots计算单个事务所需的插槽数。
 func numSlots(tx *block.Transaction) int {
 	return int((tx.Size() + txSlotSize - 1) / txSlotSize)
@@ -1650,6 +2003,75 @@ func (l *txPricedList) Put(tx *block.Transaction, local bool) {
 	}
 	// 首先将每个新事务插入紧急堆；丢弃将平衡堆
 	heap.Push(&l.urgent, tx)
+}
+
+// 低价检查交易是否比当前跟踪的最低价（远程）交易便宜（或与之一样便宜）。
+func (l *txPricedList) Underpriced(tx *block.Transaction) bool {
+	// 注意：对于两个队列，定价过低被定义为比所有非空队列中最差的项目（如果有）更差。如果两个队列都是空的，那么任何东西都不会被低估。
+	return (l.underpricedFor(&l.urgent, tx) || len(l.urgent.list) == 0) &&
+		(l.underpricedFor(&l.floating, tx) || len(l.floating.list) == 0) &&
+		(len(l.urgent.list) != 0 || len(l.floating.list) != 0)
+}
+
+//UnpricedFor检查事务是否比给定堆中价格最低的（远程）事务便宜（或与之一样便宜）。
+func (l *txPricedList) underpricedFor(h *priceHeap, tx *block.Transaction) bool {
+	// 如果在堆开始处找到过时的价格点，则丢弃该价格点
+	for len(h.list) > 0 {
+		head := h.list[0]
+		if l.all.GetRemote(head.Hash()) == nil { // 已删除或迁移
+			atomic.AddInt64(&l.stales, -1)
+			heap.Pop(h)
+			continue
+		}
+		break
+	}
+	// 检查交易是否定价过低
+	if len(h.list) == 0 {
+		return false // 根本没有远程事务。
+	}
+	// 如果远程交易比
+	// 本地跟踪的最便宜的，拒绝它。
+	return h.cmp(h.list[0], tx) >= 0
+}
+
+//iscard查找许多定价过低的交易，将其从定价列表中删除，并返回这些交易，以便从整个池中进一步删除。
+//注：本地交易不会被视为逐出。
+func (l *txPricedList) Discard(slots int, force bool) (block.Transactions, bool) {
+	drop := make(block.Transactions, 0, slots) // 要放弃的远程低价交易
+	for slots > 0 {
+		if len(l.urgent.list)*floatingRatio > len(l.floating.list)*urgentRatio || floatingRatio == 0 {
+			// 如果在清理过程中发现过时事务，则丢弃该事务
+			tx := heap.Pop(&l.urgent).(*block.Transaction)
+			if l.all.GetRemote(tx.Hash()) == nil { // 已删除或迁移
+				atomic.AddInt64(&l.stales, -1)
+				continue
+			}
+			// 找到非陈旧事务，移动到浮动堆
+			heap.Push(&l.floating, tx)
+		} else {
+			if len(l.floating.list) == 0 {
+				// 如果两个堆都为空，则停止
+				break
+			}
+			// 如果在清理过程中发现过时事务，则丢弃该事务
+			tx := heap.Pop(&l.floating).(*block.Transaction)
+			if l.all.GetRemote(tx.Hash()) == nil { // 已删除或迁移
+				atomic.AddInt64(&l.stales, -1)
+				continue
+			}
+			// 找到非过期事务，放弃它
+			drop = append(drop, tx)
+			slots -= numSlots(tx)
+		}
+	}
+	//如果我们仍然不能为新交易腾出足够的空间
+	if slots > 0 && !force {
+		for _, tx := range drop {
+			heap.Push(&l.urgent, tx)
+		}
+		return nil, false
+	}
+	return drop, true
 }
 
 type priceHeap struct {

@@ -9,6 +9,7 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/miner"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
+	"github.com/radiation-octopus/octopus/log"
 	"math/big"
 	"sync"
 	"time"
@@ -17,7 +18,7 @@ import (
 type Octopus struct {
 	// Handlers
 	txPool     *blockchain.TxPool
-	blockchain *blockchain.BlockChain
+	Blockchain *blockchain.BlockChain `autoInjectLang:"blockchain.BlockChain"`
 	//handler            *blockchain.handler
 	//ethDialCandidates  enode.Iterator
 	//snapDialCandidates enode.Iterator
@@ -50,18 +51,18 @@ type Octopus struct {
 	//shutdownTracker *shutdowncheck.ShutdownTracker //跟踪节点是否已非正常关闭以及何时关闭
 }
 
-func (s *Octopus) BlockChain() *blockchain.BlockChain { return s.blockchain }
+func (s *Octopus) BlockChain() *blockchain.BlockChain { return s.Blockchain }
 func (s *Octopus) TxPool() *blockchain.TxPool         { return s.txPool }
-func (eth *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationdb.OperationDB, checkLive bool, preferDisk bool) (statedb *operationdb.OperationDB, err error) {
+func (oct *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationdb.OperationDB, checkLive bool, preferDisk bool) (statedb *operationdb.OperationDB, err error) {
 	var (
 		current  *block.Block
-		database operationdb.Database
+		database operationdb.DatabaseI
 		//report   = true
 		//origin   = b.NumberU64()
 	)
 	// 首先检查实时数据库如果状态完全可用，请使用该状态。
 	if checkLive {
-		statedb, err = eth.blockchain.StateAt(b.Root())
+		statedb, err = oct.Blockchain.StateAt(b.Root())
 		if err == nil {
 			return statedb, nil
 		}
@@ -71,25 +72,26 @@ func (eth *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationd
 			// Create an ephemeral trie.Database for isolating the live one. Otherwise
 			// the internal junks created by tracing will be persisted into the disk.
 			//database = blockchain.NewDatabaseWithConfig(eth.chainDb, &trie.Config{Cache: 16})
-			//if statedb, err = state.New(b.Root(), database, nil); err == nil {
+			//if statedb, terr = state.New(b.Root(), database, nil); terr == nil {
 			//	log.Info("Found disk backend for state trie", "root", b.Root(), "number", b.Number())
 			//	return statedb, nil
 			//}
 		}
 		// 给出了可选的基本状态数据库，将起点标记为父块
 		//statedb, database = base, base.Database()
-		current = eth.blockchain.GetBlock(b.ParentHash())
+		var number uint64
+		current = oct.Blockchain.GetBlock(b.ParentHash(), number)
 	} else {
-		// Otherwise try to reexec blocks until we find a state or reach our limit
+		// 否则，尝试reexec块，直到找到状态或达到极限
 		current = b
 
 		// 创建短暂的trie。用于隔离活动数据库。否则，通过跟踪创建的内部垃圾将保留到磁盘中。
-		//database = state.NewDatabaseWithConfig(eth.chainDb, &trie.Config{Cache: 16})
+		database = operationdb.NewDatabaseWithConfig(oct.chainDb, &operationdb.Config{Cache: 16})
 
 		// 如果我们没有检查脏数据库，一定要检查干净的数据库，否则我们会倒转经过一个持久化的块（特定的角案例是来自genesis的链跟踪）。
 		if !checkLive {
-			//statedb, err = state.New(current.Root(), database, nil)
-			//if err == nil {
+			//statedb, terr = state.New(current.Root(), database, nil)
+			//if terr == nil {
 			//	return statedb, nil
 			//}
 		}
@@ -98,23 +100,24 @@ func (eth *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationd
 			if current.NumberU64() == 0 {
 				return nil, errors.New("genesis state is missing")
 			}
-			parent := eth.blockchain.GetBlock(current.ParentHash())
+			var number uint64
+			parent := oct.Blockchain.GetBlock(current.ParentHash(), number)
 			if parent == nil {
 				return nil, fmt.Errorf("missing block %v %d", current.ParentHash(), current.NumberU64()-1)
 			}
 			current = parent
 
-			statedb, err = operationdb.New(current.Root(), &database)
+			statedb, err = operationdb.NewOperationDb(current.Root(), database)
 			if err == nil {
 				break
 			}
 		}
-		//if err != nil {
-		//	switch err.(type) {
+		//if terr != nil {
+		//	switch terr.(type) {
 		//	case *trie.MissingNodeError:
 		//		return nil, fmt.Errorf("required historical state unavailable (reexec=%d)", reexec)
 		//	default:
-		//		return nil, err
+		//		return nil, terr
 		//	}
 		//}
 	}
@@ -135,19 +138,19 @@ func (eth *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationd
 	//	if current = eth.blockchain.GetBlockByNumber(next); current == nil {
 	//		return nil, fmt.Errorf("block #%d not found", next)
 	//	}
-	//	_, _, _, err := eth.blockchain.Processor().Process(current, statedb, vm.Config{})
-	//	if err != nil {
-	//		return nil, fmt.Errorf("processing block %d failed: %v", current.NumberU64(), err)
+	//	_, _, _, terr := eth.blockchain.Processor().Process(current, statedb, vm.Config{})
+	//	if terr != nil {
+	//		return nil, fmt.Errorf("processing block %d failed: %v", current.NumberU64(), terr)
 	//	}
 	//	// Finalize the state so any modifications are written to the trie
-	//	root, err := statedb.Commit(eth.blockchain.Config().IsEIP158(current.Number()))
-	//	if err != nil {
+	//	root, terr := statedb.Commit(eth.blockchain.Config().IsEIP158(current.Number()))
+	//	if terr != nil {
 	//		return nil, fmt.Errorf("stateAtBlock commit failed, number %d root %v: %w",
-	//			current.NumberU64(), current.Root().Hex(), err)
+	//			current.NumberU64(), current.Root().Hex(), terr)
 	//	}
-	//	statedb, err = state.New(root, database, nil)
-	//	if err != nil {
-	//		return nil, fmt.Errorf("state reset after block %d failed: %v", current.NumberU64(), err)
+	//	statedb, terr = state.New(root, database, nil)
+	//	if terr != nil {
+	//		return nil, fmt.Errorf("state reset after block %d failed: %v", current.NumberU64(), terr)
 	//	}
 	//	database.TrieDB().Reference(root, common.Hash{})
 	//	if parent != (common.Hash{}) {
@@ -162,7 +165,7 @@ func (eth *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationd
 	return statedb, nil
 }
 
-type config struct {
+type Config struct {
 	//genesis块，如果数据库为空，则插入该块。
 	//如果为零，则使用以太坊主网络块。
 	Genesis *blockchain.Genesis `toml:",omitempty"`
@@ -185,7 +188,9 @@ type config struct {
 }
 
 func (oct *Octopus) start() {
-	//New(oct)
+	log.Info("oct starting")
+	New(oct)
+	log.Info("oct 启动完成")
 }
 
 func (oct *Octopus) close() {
@@ -194,9 +199,9 @@ func (oct *Octopus) close() {
 
 func New(oct *Octopus) (*Octopus, error) {
 	genesis := blockchain.MakeGenesis()
-	cfg := &config{
-		Genesis: genesis,
-		//NetworkId:       big.Int.Uint64(1),
+	cfg := &Config{
+		Genesis:   genesis,
+		NetworkId: genesis.Config.ChainID.Uint64(),
 		//SyncMode:        downloader.FullSync,
 		DatabaseCache:   256,
 		DatabaseHandles: 256,
@@ -210,21 +215,24 @@ func New(oct *Octopus) (*Octopus, error) {
 			Recommit:  time.Second,
 		},
 	}
-	oct = &Octopus{
-		//config:            config,
-		//merger:            merger,
-		//eventMux:          stack.EventMux(),
-		//accountManager:    stack.AccountManager(),
-		//engine:            ethconfig.CreateConsensusEngine(stack, chainConfig, &ethashConfig, config.Miner.Notify, config.Miner.Noverify, chainDb),
-		closeBloomHandler: make(chan struct{}),
-		//networkID:         config.NetworkId,
-		//gasPrice:          config.Miner.GasPrice,
-		//etherbase:         config.Miner.Etherbase,
-		////bloomRequests:     make(chan chan *bloombits.Retrieval),
-		//bloomIndexer:      core.NewBloomIndexer(chainDb, params.BloomBitsBlocks, params.BloomConfirms)
-		//p2pServer:         stack.Server(),
-		//shutdownTracker:   shutdowncheck.NewShutdownTracker(chainDb),
-	}
+	//oct := &Octopus{
+	//	//config:            config,
+	//	//merger:            merger,
+	//	//eventMux:          stack.EventMux(),
+	//	//accountManager:    stack.AccountManager(),
+	//	//engine:            ethconfig.CreateConsensusEngine(stack, chainConfig, &ethashConfig, config.Miner.Notify, config.Miner.Noverify, chainDb),
+	//	closeBloomHandler: make(chan struct{}),
+	//	Blockchain: bc,
+	//	//networkID:         config.NetworkId,
+	//	//gasPrice:          config.Miner.GasPrice,
+	//	//etherbase:         config.Miner.Etherbase,
+	//	////bloomRequests:     make(chan chan *bloombits.Retrieval),
+	//	//bloomIndexer:      core.NewBloomIndexer(chainDb, params.BloomBitsBlocks, params.BloomConfirms)
+	//	//p2pServer:         stack.Server(),
+	//	//shutdownTracker:   shutdowncheck.NewShutdownTracker(chainDb),
+	//}
+	oct.closeBloomHandler = make(chan struct{})
+	oct.txPool = blockchain.NewTxPool(blockchain.DefaultTxPoolConfig, oct.Blockchain)
 	oct.miner = miner.New(oct, &cfg.Miner, oct.engine)
 
 	return oct, nil

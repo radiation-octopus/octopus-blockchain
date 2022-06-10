@@ -23,8 +23,26 @@ const (
 //定义hash字节类型
 type Hash [HashLength]byte
 
+type HashStruct struct {
+	Hash Hash
+}
+
+func (hs HashStruct) getHash() Hash {
+	return hs.Hash
+}
+
 //定义地址字节类型
 type Address [AddressLength]byte
+
+// Bytes获取基础地址的字符串表示形式。
+func (a Address) Bytes() []byte { return a[:] }
+
+func (a *Address) SetBytes(b []byte) {
+	if len(b) > len(a) {
+		b = b[len(b)-AddressLength:]
+	}
+	copy(a[AddressLength-len(b):], b)
+}
 
 type Bytes []byte
 
@@ -42,13 +60,6 @@ func BytesToHash(b []byte) Hash {
 	var hash Hash
 	hash.SetBytes(b)
 	return hash
-}
-
-func (a *Address) SetBytes(b []byte) {
-	if len(b) > len(a) {
-		b = b[len(b)-AddressLength:]
-	}
-	copy(a[AddressLength-len(b):], b)
 }
 
 // SetBytes sets the hash to the value of b.

@@ -120,7 +120,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	//}
 	var (
 		ret   []byte
-		vmerr error // vm errors do not effect consensus and are therefore not assigned to err
+		vmerr error // vm errors do not effect consensus and are therefore not assigned to terr
 	)
 
 	if contractCreation { //创建合约

@@ -73,8 +73,7 @@ func applyTransaction(msg block.Message, gp *transition.GasPool, operationdb *op
 	}
 
 	*usedGas += result.UsedGas
-	// Create a new receipt for the transaction, storing the intermediate root and gas used
-	// by the tx.
+	// 为交易创建新收据，存储tx使用的中间根和gas。
 	receipt := &block.Receipt{}
 	receipt.TxHash = tx.Hash()
 	receipt.GasUsed = result.UsedGas
@@ -83,10 +82,7 @@ func applyTransaction(msg block.Message, gp *transition.GasPool, operationdb *op
 	return receipt, err
 }
 
-// ApplyTransaction attempts to apply a transaction to the given state database
-// and uses the input parameters for its environment. It returns the receipt
-// for the transaction, gas used and an error if the transaction failed,
-// indicating the block was invalid.
+// ApplyTransaction尝试将事务应用于给定的状态数据库，并使用其环境的输入参数。如果交易失败，则返回交易收据、使用的天然气和terr，表明阻塞无效。
 func ApplyTransaction(bc vm.ChainContext, author *entity.Address, gp *transition.GasPool, statedb *operationdb.OperationDB, header *block.Header, tx *block.Transaction, usedGas *uint64, cfg vm.Config) (*block.Receipt, error) {
 	msg, err := tx.AsMessage(block.MakeSigner(header.Number), header.BaseFee)
 	if err != nil {

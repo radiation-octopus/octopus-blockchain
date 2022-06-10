@@ -32,7 +32,7 @@ func NewForkChoice(chainReader ChainReader, preserve func(header *block.Header) 
 	// Seed a fast but crypto originating random generator
 	seed, err := crand.Int(crand.Reader, big.NewInt(math.MaxInt64))
 	if err != nil {
-		//log.Crit("Failed to initialize random seed", "err", err)
+		//log.Crit("Failed to initialize random seed", "terr", terr)
 	}
 	return &ForkChoice{
 		chain:    chainReader,

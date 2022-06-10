@@ -139,10 +139,10 @@ func newWorker(config *Config, engine consensus.Engine, oct Backend, init bool) 
 		//unconfirmed:        newUnconfirmedBlocks(eth.BlockChain(), sealingLogAtDepth),
 		pendingTasks: make(map[entity.Hash]*task),
 		txsCh:        make(chan blockchain.NewTxsEvent, txChanSize),
-		//chainHeadCh:        make(chan core.ChainHeadEvent, chainHeadChanSize),
+		chainHeadCh:  make(chan blockchain.ChainHeadEvent, chainHeadChanSize),
 		//chainSideCh:        make(chan core.ChainSideEvent, chainSideChanSize),
-		//newWorkCh:          make(chan *newWorkReq),
-		//getWorkCh:          make(chan *getWorkReq),
+		newWorkCh:          make(chan *newWorkReq),
+		getWorkCh:          make(chan *getWorkReq),
 		taskCh:             make(chan *task),
 		resultCh:           make(chan *block.Block, resultQueueSize),
 		exitCh:             make(chan struct{}),
@@ -169,7 +169,7 @@ func newWorker(config *Config, engine consensus.Engine, oct Backend, init bool) 
 	go worker.resultLoop()          //数据储存通道
 	go worker.taskLoop()            //任务处理通道
 
-	// Submit first work to initialize pending state.
+	// 提交第一个工作以初始化挂起状态。
 	if init {
 		worker.startCh <- struct{}{}
 	}
@@ -254,7 +254,7 @@ func (w *worker) mainLoop() {
 		//	// sealing block for higher profit.
 		//	if w.isRunning() && w.current != nil && len(w.current.uncles) < 2 {
 		//		start := time.Now()
-		//		if err := w.commitUncle(w.current, ev.Block.Header()); err == nil {
+		//		if terr := w.commitUncle(w.current, ev.Block.Header()); terr == nil {
 		//			w.commit(w.current.copy(), nil, true, start)
 		//		}
 		//	}
@@ -381,8 +381,7 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 	if parent == nil {
 		return nil, fmt.Errorf("missing parent")
 	}
-	// Sanity check the timestamp correctness, recap the timestamp
-	// to parent+1 if the mutation is allowed.
+	// 健全性检查时间戳的正确性，如果允许变异，则将时间戳重述给父级+1。
 	timestamp := genParams.timestamp
 	if parent.Time() >= timestamp {
 		if genParams.forceTime {
@@ -390,7 +389,7 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 		}
 		timestamp = parent.Time() + 1
 	}
-	// Construct the sealing block header, set the extra field if it's allowed
+	// 构造密封块标题，如果允许，设置额外字段
 	num := parent.Number()
 	header := &block.Header{
 		ParentHash: parent.Hash(),
@@ -415,14 +414,14 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 	//	}
 	//}
 	// 使用默认或自定义共识引擎运行共识准备。
-	//if err := w.engine.Prepare(w.chain, header); err != nil {
-	//	log.Error("Failed to prepare header for sealing", "err", err)
-	//	return nil, err
+	//if terr := w.engine.Prepare(w.chain, header); terr != nil {
+	//	log.Error("Failed to prepare header for sealing", "terr", terr)
+	//	return nil, terr
 	//}
 	// 如果在奇怪的状态下开始工作，可能会发生这种情况。请注意genParams。coinbase可以与header不同。Coinbase-since-clique算法可以修改标头中的Coinbase字段。
 	env, err := w.makeEnv(parent, header, genParams.coinbase)
 	if err != nil {
-		log.Error("无法创建密封配置", "err", err)
+		log.Error("无法创建密封配置", "terr", err)
 		return nil, err
 	}
 	// 只有在允许的情况下，才能为密封工作积累叔叔。
@@ -432,8 +431,8 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 	//			if len(env.uncles) == 2 {
 	//				break
 	//			}
-	//			if err := w.commitUncle(env, uncle.Header()); err != nil {
-	//				log.Trace("Possible uncle rejected", "hash", hash, "reason", err)
+	//			if terr := w.commitUncle(env, uncle.Header()); terr != nil {
+	//				log.Trace("Possible uncle rejected", "hash", hash, "reason", terr)
 	//			} else {
 	//				log.Debug("Committing new uncle to block", "hash", hash)
 	//			}
@@ -454,7 +453,7 @@ func (w *worker) makeEnv(parent *block.Block, header *block.Header, coinbase ent
 		// 注意：由于可以在任意父块上创建密封块，但父块的状态可能已经被修剪，因此将来需要进行必要的状态恢复。
 		// 可接受的最大reorg深度可由最终试块限制
 		state, err = w.oct.StateAtBlock(parent, 1024, nil, false, false)
-		log.Warn("Recovered mining state", "root", parent.Root(), "err", err)
+		log.Warn("Recovered mining state", "root", parent.Root(), "terr", err)
 	}
 	if err != nil {
 		return nil, err
@@ -493,7 +492,7 @@ func (w *worker) commit(env *environment, interval func(), update bool, start ti
 		}
 		// 创建本地环境副本，避免与快照状态的数据竞争。
 		env := env.copy()
-		//block, err := w.engine.FinalizeAndAssemble(w.chain, env.header, env.state, env.txs, env.unclelist(), env.receipts)
+		//block, terr := w.engine.FinalizeAndAssemble(w.chain, env.header, env.state, env.txs, env.unclelist(), env.receipts)
 		block := block.NewBlock(env.header, env.txs, env.receipts)
 		// 如果我们是后期合并，只需忽略
 		if !w.isTTDReached(block.Header()) {
@@ -604,17 +603,17 @@ func (w *worker) commitTransactions(env *environment, txs *block.TransactionsByP
 
 		logs, err := w.commitTransaction(env, tx)
 		switch {
-		//case errors.Is(err, core.ErrGasLimitReached):
+		//case errors.Is(terr, core.ErrGasLimitReached):
 		//	//弹出当前的天然气交易，而不从帐户转入下一个交易
 		//	log.Trace("Gas limit exceeded for current block", "sender", from)
 		//	txs.Pop()
 		//
-		//case errors.Is(err, core.ErrNonceTooLow):
+		//case errors.Is(terr, core.ErrNonceTooLow):
 		//	// 事务池和miner、shift之间的新head通知数据竞争
 		//	log.Trace("Skipping transaction with low nonce", "sender", from, "nonce", tx.Nonce())
 		//	txs.Shift()
 		//
-		//case errors.Is(err, core.ErrNonceTooHigh):
+		//case errors.Is(terr, core.ErrNonceTooHigh):
 		//	//事务池和miner之间的Reorg通知数据竞争，跳过帐户
 		//	log.Trace("Skipping account with hight nonce", "sender", from, "nonce", tx.Nonce())
 		//	txs.Pop()
@@ -625,27 +624,23 @@ func (w *worker) commitTransactions(env *environment, txs *block.TransactionsByP
 			env.tcount++
 			txs.Shift()
 
-		//case errors.Is(err, core.ErrTxTypeNotSupported):
-		//	// Pop the unsupported transaction without shifting in the next from the account
+		//case errors.Is(terr, core.ErrTxTypeNotSupported):
+		//	// 弹出不受支持的事务，而不从帐户转入下一个事务
 		//	log.Trace("Skipping unsupported transaction type", "sender", from, "type", tx.Type())
 		//	txs.Pop()
 
 		default:
-			// Strange error, discard the transaction and get the next in line (note, the
-			// nonce-too-high clause will prevent us from executing in vain).
-			log.Debug("Transaction failed, account skipped", "hash", tx.Hash(), "err", err)
+			// 奇怪的terr，放弃事务并获得下一个事务（注意，nonce too high子句将阻止我们徒劳地执行）。
+			log.Debug("Transaction failed, account skipped", "hash", tx.Hash(), "terr", err)
 			txs.Shift()
 		}
 	}
 
 	if !w.isRunning() && len(coalescedLogs) > 0 {
-		// We don't push the pendingLogsEvent while we are sealing. The reason is that
-		// when we are sealing, the worker will regenerate a sealing block every 3 seconds.
-		// In order to avoid pushing the repeated pendingLog, we disable the pending log pushing.
+		// 密封时，我们不会推动吊坠。原因是，当我们密封时，工作者会每3秒钟重新生成一个密封块。为了避免推送重复的pendingLog，我们禁用了挂起的日志推送。
 
-		// make a copy, the state caches the logs and these logs get "upgraded" from pending to mined
-		// logs by filling in the block hash when the block was mined by the local miner. This can
-		// cause a race condition if a log was "upgraded" before the PendingLogsEvent is processed.
+		// 制作一个副本，州缓存日志，当本地工作者开采区块时，通过填写区块哈希，这些日志从待定日志“升级”到已开采日志。
+		//如果在处理PendingLogseEvent之前“升级”了日志，这可能会导致争用情况。
 		cpy := make([]*log.OctopusLog, len(coalescedLogs))
 		for i, l := range coalescedLogs {
 			cpy[i] = new(log.OctopusLog)
@@ -653,8 +648,7 @@ func (w *worker) commitTransactions(env *environment, txs *block.TransactionsByP
 		}
 		w.pendingLogsFeed.Send(cpy)
 	}
-	// Notify resubmit loop to decrease resubmitting interval if current interval is larger
-	// than the user-specified one.
+	// 如果当前间隔大于用户指定的间隔，则通知重新提交循环以缩短重新提交间隔。
 	if interrupt != nil {
 		w.resubmitAdjustCh <- &intervalAdjust{inc: false}
 	}
@@ -811,7 +805,7 @@ func (w *worker) taskLoop() {
 			w.pendingMu.Unlock()
 
 			if err := w.engine.Seal(w.chain, task.block, w.resultCh, stopCh); err != nil {
-				log.Warn("Block sealing failed", "err", err)
+				log.Warn("Block sealing failed", "terr", err)
 				w.pendingMu.Lock()
 				delete(w.pendingTasks, sealHash)
 				w.pendingMu.Unlock()
@@ -876,7 +870,7 @@ func (w *worker) resultLoop() {
 			// 将块和状态提交到数据库。
 			_, err := w.chain.WriteBlockAndSetHead(b, receipts, logs, task.state, true)
 			if err != nil {
-				log.Error("写入区块链失败", "err", err)
+				log.Error("写入区块链失败", "terr", err)
 				continue
 			}
 			//log.Info("已成功密封新块", "number", b.Number(), "sealhash", sealhash, "hash", hash,
@@ -1014,7 +1008,7 @@ func totalFees(block *block.Block, receipts []*block.Receipt) *big.Float {
 		minerFee, _ := tx.EffectiveGasTip(block.BaseFee())
 		feesWei.Add(feesWei, new(big.Int).Mul(new(big.Int).SetUint64(receipts[i].GasUsed), minerFee))
 	}
-	return new(big.Float).Quo(new(big.Float).SetInt(feesWei), new(big.Float).SetInt(big.NewInt(operationUtils.Octcao)))
+	return new(big.Float).Quo(new(big.Float).SetInt(feesWei), new(big.Float).SetInt(big.NewInt(entity.Octcao)))
 }
 
 // recalcRecommit recalculates the resubmitting interval upon feedback.

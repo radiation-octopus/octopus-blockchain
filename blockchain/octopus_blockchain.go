@@ -6,6 +6,8 @@ import (
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/memorydb"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/vm"
 	"github.com/radiation-octopus/octopus/log"
@@ -21,8 +23,9 @@ const (
 
 //blockchain结构体
 type BlockChain struct {
-	db            operationdb.Database //数据库
-	txLookupLimit uint64               `autoInjectCfg:"octopus.block.binding.txLookupLimit"` //一个区块容纳最大交易限制
+	db operationdb.Database //数据库
+
+	TxLookupLimit uint64 `autoInjectCfg:octopus.blockchain.binding.genesis.header.txLookupLimit"` //一个区块容纳最大交易限制
 	hc            *HeaderChain
 	chainHeadFeed Feed
 	blockProcFeed Feed //区块过程注入事件
@@ -33,13 +36,13 @@ type BlockChain struct {
 	currentBlock atomic.Value // 当前区块
 	//currentFastBlock atomic.Value	//快速同步链的当前区块
 
-	operationCache operationdb.Database
-	stateCache     operationdb.Database // 要在导入之间重用的状态数据库（包含状态缓存）
-	futureBlocks   *lru.Cache           //新区块缓存区
-	wg             sync.WaitGroup       //同步等待属性
-	quit           chan struct{}        //关闭属性
-	running        int32                //运行属性
-	procInterrupt  int32                //块处理中断信号
+	operationCache operationdb.DatabaseI
+	stateCache     operationdb.DatabaseI // 要在导入之间重用的状态数据库（包含状态缓存）
+	futureBlocks   *lru.Cache            //新区块缓存区
+	wg             sync.WaitGroup        //同步等待属性
+	quit           chan struct{}         //关闭属性
+	running        int32                 //运行属性
+	procInterrupt  int32                 //块处理中断信号
 
 	engine    consensus.Engine //共识引擎
 	validator Validator        //区块验证器
@@ -50,6 +53,7 @@ type BlockChain struct {
 }
 
 type ChainConfig struct {
+	ChainID *big.Int `json:"chainId"` // chainId标识当前链并用于重播保护
 }
 
 //迭代器
@@ -94,13 +98,28 @@ func (it *insertIterator) previous() *block.Header {
 
 //链启动类，配置参数启动
 func (bc *BlockChain) start() {
+	//构造创世区块
+	genesis := DefaultGenesisBlock()
+	SetupGenesisBlockWithOverride(bc.db, genesis, nil, nil)
+	//打开内存数据库
+	chainDb, err := OpenDatabaseWithFreezer()
+	if err != nil {
+		errors.New("chainDb start failed")
+	}
 	//初始化区块链
-	newBlockChain(operationdb.Database{}, nil, nil)
+	bc, erro := newBlockChain(bc, chainDb, nil, nil)
+	if erro != nil {
+		errors.New("blockchain start fail")
+	}
 }
 
 //链终止
 func (bc *BlockChain) close() {
 
+}
+
+func (bc *BlockChain) getBlockChain() *BlockChain {
+	return bc
 }
 
 // GetVMConfig返回块链VM配置。
@@ -109,25 +128,50 @@ func (bc *BlockChain) GetVMConfig() *vm.Config {
 }
 
 //构建区块链结构体
-func newBlockChain(db operationdb.Database, engine consensus.Engine, shouldPreserve func(header *block.Header) bool) (*BlockChain, error) {
+func newBlockChain(bc *BlockChain, db operationdb.Database, engine consensus.Engine, shouldPreserve func(header *block.Header) bool) (*BlockChain, error) {
 	futureBlocks, _ := lru.New(maxFutureBlocks)
-	bc := &BlockChain{
-		db:   db,
-		quit: make(chan struct{}),
-		//chainmu:       syncx.NewClosableMutex(),
-		futureBlocks: futureBlocks,
-		engine:       engine,
-	}
+	bc.db = db
+	bc.quit = make(chan struct{})
+	bc.futureBlocks = futureBlocks
+	bc.engine = engine
+	//bc = &BlockChain{
+	//	db:   db,
+	//	quit: make(chan struct{}),
+	//	//chainmu:       syncx.NewClosableMutex(),
+	//	//stateCache: state.NewDatabaseWithConfig(db, &trie.Config{
+	//	//	Cache:     cacheConfig.TrieCleanLimit,
+	//	//	Journal:   cacheConfig.TrieCleanJournal,
+	//	//	Preimages: cacheConfig.Preimages,
+	//	//}),
+	//	futureBlocks: futureBlocks,
+	//	engine:       engine,
+	//}
 	//bc.forker = NewForkChoice(bc, shouldPreserve)
+	bc.stateCache = operationdb.NewDatabaseWithConfig(db, &operationdb.Config{
+		//Cache:     cacheConfig.TrieCleanLimit,
+		//Journal:   cacheConfig.TrieCleanJournal,
+		//Preimages: cacheConfig.Preimages,
+	})
 	//构建区块验证器
 	bc.validator = NewBlockValidator(bc, engine)
 	//构建区块处理器
 	bc.processor = NewBlockProcessor(bc, engine)
+
+	var err error
+	bc.hc, err = NewHeaderChain(engine, bc.insertStopped)
+	if err != nil {
+		return nil, err
+	}
 	//获取创世区块
 	bc.genesisBlock = bc.getBlockByNumber(0)
-	//if bc.genesisBlock == nil {
-	//	return nil, errors.New("创世区块未发现")
-	//}
+	if bc.genesisBlock == nil {
+		return nil, errors.New("创世区块未发现")
+	}
+
+	var nilBlock *block.Block
+	bc.currentBlock.Store(nilBlock)
+	//bc.currentFastBlock.Store(nilBlock)
+	//bc.currentFinalizedBlock.Store(nilBlock)
 	if bc.empty() {
 	}
 	if err := bc.loadLastState(); err != nil {
@@ -152,8 +196,140 @@ func (bc *BlockChain) empty() bool {
 //加载数据库最新链的状态
 //同步区块数据
 func (bc *BlockChain) loadLastState() error {
+	//恢复最后一个已知的头块
+	head := operationdb.ReadHeadBlockHash()
+	if head == (entity.Hash{}) {
+		// 数据库损坏或为空，从头开始初始化
+		log.Warn("Empty database, resetting chain")
+		return bc.Reset()
+	}
+	// 确保整个头部模块可用
+	currentBlock := bc.GetBlockByHash(head)
+	if currentBlock == nil {
+		// 数据库损坏或为空，从头开始初始化
+		log.Warn("Head block missing, resetting chain", "hash", head)
+		return bc.Reset()
+	}
+	// 加入当前区块
+	bc.currentBlock.Store(currentBlock)
+	//headBlockGauge.Update(int64(currentBlock.NumberU64()))
 
+	// Restore the last known head header
+	currentHeader := currentBlock.Header()
+	if head := operationdb.ReadHeadHeaderHash(bc.db); head != (entity.Hash{}) {
+		if header := bc.GetHeaderByHash(head); header != nil {
+			currentHeader = header
+		}
+	}
+	bc.hc.SetCurrentHeader(currentHeader)
+
+	// 恢复最后一个已知的磁头快速块
+	//bc.currentFastBlock.Store(currentBlock)
+	//headFastBlockGauge.Update(int64(currentBlock.NumberU64()))
+
+	//if head := rawdb.ReadHeadFastBlockHash(bc.db); head != (entity.Hash{}) {
+	//	if block := bc.GetBlockByHash(head); block != nil {
+	//		bc.currentFastBlock.Store(block)
+	//		headFastBlockGauge.Update(int64(block.NumberU64()))
+	//	}
+	//}
+
+	// 恢复最后一个已知的已完成块
+	//if head := rawdb.ReadFinalizedBlockHash(bc.db); head != (entity.Hash{}) {
+	//	if block := bc.GetBlockByHash(head); block != nil {
+	//		bc.currentFinalizedBlock.Store(block)
+	//		//headFinalizedBlockGauge.Update(int64(block.NumberU64()))
+	//	}
+	//}
+	// 为用户发布状态日志
+	//currentFastBlock := bc.CurrentFastBlock()
+	//currentFinalizedBlock := bc.CurrentFinalizedBlock()
+
+	headerTd := bc.GetTd(currentHeader.Hash(), currentHeader.Number.Uint64())
+	blockTd := bc.GetTd(currentBlock.Hash(), currentBlock.NumberU64())
+	//fastTd := bc.GetTd(currentFastBlock.Hash(), currentFastBlock.NumberU64())
+
+	log.Info("Loaded most recent local header", "number", currentHeader.Number, "hash", currentHeader.Hash(), "td", headerTd, "age")
+	log.Info("Loaded most recent local full block", "number", currentBlock.Number(), "hash", currentBlock.Hash(), "td", blockTd, "age")
+	//log.Info("Loaded most recent local fast block", "number", currentFastBlock.Number(), "hash", currentFastBlock.Hash(), "td", fastTd, "age", common.PrettyAge(time.Unix(int64(currentFastBlock.Time()), 0)))
+
+	//if currentFinalizedBlock != nil {
+	//	finalTd := bc.GetTd(currentFinalizedBlock.Hash(), currentFinalizedBlock.NumberU64())
+	//	log.Info("Loaded most recent local finalized block", "number", currentFinalizedBlock.Number(), "hash", currentFinalizedBlock.Hash(), "td", finalTd, "age", common.PrettyAge(time.Unix(int64(currentFinalizedBlock.Time()), 0)))
+	//}
+	//if pivot := rawdb.ReadLastPivotNumber(bc.db); pivot != nil {
+	//	log.Info("Loaded last fast-sync pivot marker", "number", *pivot)
+	//}
 	return nil
+}
+
+//重置清除整个区块链，将其恢复到起源状态。
+func (bc *BlockChain) Reset() error {
+	return bc.ResetWithGenesisBlock(bc.genesisBlock)
+}
+
+// ResetWithGenesisBlock清除整个区块链，将其恢复到指定的genesis状态。
+func (bc *BlockChain) ResetWithGenesisBlock(genesis *block.Block) error {
+	// 转储整个块链并清除缓存
+	//if err := bc.SetHead(0); err != nil {
+	//	return err
+	//}
+	//if !bc.chainmu.TryLock() {
+	//	return errChainStopped
+	//}
+	//defer bc.chainmu.Unlock()
+
+	// 准备genesis块并重新初始化链
+	//batch := bc.db.NewBatch()
+	operationdb.WriteTd(genesis.Hash(), genesis.NumberU64(), genesis.Difficulty())
+	operationdb.WriteBlock(genesis)
+	//if err := batch.Write(); err != nil {
+	//	log.Info("Failed to write genesis block", "err", err)
+	//}
+	bc.writeHeadBlock(genesis)
+
+	// 上次更新所有内存链标记
+	bc.genesisBlock = genesis
+	bc.currentBlock.Store(bc.genesisBlock)
+	//headBlockGauge.Update(int64(bc.genesisBlock.NumberU64()))
+	bc.hc.SetGenesis(bc.genesisBlock.Header())
+	bc.hc.SetCurrentHeader(bc.genesisBlock.Header())
+	//bc.currentFastBlock.Store(bc.genesisBlock)
+	//headFastBlockGauge.Update(int64(bc.genesisBlock.NumberU64()))
+	return nil
+}
+
+//SetHead将本地链倒回到新的头部。根据节点是快速同步还是完全同步以及处于何种状态，该方法将尝试从磁盘中删除最少的数据，同时保持链的一致性。
+//func (bc *BlockChain) SetHead(head uint64) error {
+//	_, err := bc.setHeadBeyondRoot(head, entity.Hash{}, false)
+//	return err
+//}
+
+//writeHeadBlock将新的头块注入当前块链。
+//此方法假定块确实是一个真正的头部。
+//如果head header和head fast sync块较旧或位于不同的侧链上，它还会将它们重置为相同的块。
+//注意，此函数假设“mu”互斥锁被保持！
+func (bc *BlockChain) writeHeadBlock(block *block.Block) {
+	// 将块添加到规范链号方案中，并标记为头部
+	//batch := bc.db.NewBatch()
+	operationdb.WriteHeadHeaderHash(block.Hash())
+	//operationdb.WriteHeadFastBlockHash(batch, block.Hash())
+	operationdb.WriteCanonicalHash(block.Hash(), block.NumberU64())
+	operationdb.WriteTxLookupEntriesByBlock(block)
+	operationdb.WriteHeadBlockHash(block.Hash())
+
+	// 将整个批刷新到磁盘中，如果失败，请退出节点
+	//if err := batch.Write(); err != nil {
+	//	log.Info("Failed to update chain indexes and markers", "err", err)
+	//}
+	// 在最后一步中更新所有内存链标记
+	bc.hc.SetCurrentHeader(block.Header())
+
+	//bc.currentFastBlock.Store(block)
+	//headFastBlockGauge.Update(int64(block.NumberU64()))
+
+	bc.currentBlock.Store(block)
+	//headBlockGauge.Update(int64(block.NumberU64()))
 }
 
 //循环更新区块
@@ -169,6 +345,11 @@ func (bc *BlockChain) updateFutureBlocks() {
 			return
 		}
 	}
+}
+
+// 调用StopInsert后，insertStopped返回true。
+func (bc *BlockChain) insertStopped() bool {
+	return atomic.LoadInt32(&bc.procInterrupt) == 1
 }
 
 func (bc *BlockChain) procFutureBlocks() {
@@ -215,18 +396,18 @@ func (bc *BlockChain) insertChain(chain Blocks, verifySeals, setHead bool) (int,
 	}
 
 	//数据库操作
-	statedb, err := operationdb.New(parent.Root, &bc.operationCache)
+	operationdb, err := operationdb.NewOperationDb(parent.Root, bc.operationCache)
 	if err != nil {
 		return it.index, err
 	}
-	receipts, logs, _, err := bc.processor.Process(block, statedb, bc.vmConfig) //usedGas
+	receipts, logs, _, err := bc.processor.Process(block, operationdb, bc.vmConfig) //usedGas
 
 	var status WriteStatus
 	if !setHead {
 		// 不要设置头部，只插入块
-		err = bc.writeBlockWithState(block, receipts, logs, statedb)
+		err = bc.writeBlockWithState(block, receipts, logs, operationdb)
 	} else {
-		status, err = bc.writeBlockAndSetHead(block, receipts, logs, statedb, false)
+		status, err = bc.writeBlockAndSetHead(block, receipts, logs, operationdb, false)
 	}
 	switch status {
 
@@ -271,17 +452,17 @@ func (bc *BlockChain) writeBlockWithState(block *block.Block, receipts []*block.
 	// Note all the components of block(td, hash->number map, header, body, receipts)
 	// should be written atomically. BlockBatch is used for containing all components.
 	//blockBatch := bc.db.NewBatch()
-	operationdb.WriteTd(bc.db, block.Hash(), block.NumberU64(), externTd)
+	operationdb.WriteTd(block.Hash(), block.NumberU64(), externTd)
 	operationdb.WriteBlock(block)
 	operationdb.WriteReceipts(block.Hash(), receipts)
 	//rawdb.WritePreimages(blockBatch, state.Preimages())
-	//if err := blockBatch.Write(); err != nil {
-	//	log.Crit("Failed to write block into disk", "err", err)
+	//if terr := blockBatch.Write(); terr != nil {
+	//	log.Crit("Failed to write block into disk", "terr", terr)
 	//}
 	// 将所有缓存状态更改提交到基础内存数据库中。
-	//root, err := state.Commit(bc.chainConfig.IsEIP158(block.Number()))
-	//if err != nil {
-	//	return err
+	//root, terr := state.Commit(bc.chainConfig.IsEIP158(block.Number()))
+	//if terr != nil {
+	//	return terr
 	//}
 	//triedb := bc.stateCache.TrieDB()
 
@@ -345,4 +526,38 @@ func (bc *BlockChain) writeBlockAndSetHead(block *block.Block, receipts []*block
 		return 0, err
 	}
 	return 1, nil
+}
+
+// OpenDatabaseWithFreezer从节点的数据目录中打开一个具有给定名称的现有数据库（如果找不到以前的名称，则创建一个），
+//并向其附加一个链冻结器，该链冻结器将已有的的链数据从数据库移动到不可变的仅附加文件。
+//如果节点是临时节点，则返回内存数据库。
+func OpenDatabaseWithFreezer() (operationdb.Database, error) {
+	var db operationdb.Database
+	var err error
+	db = memorydb.NewMemoryDatabase()
+	//n.lock.Lock()
+	//defer n.lock.Unlock()
+	//if n.state == closedState {
+	//	return nil, ErrNodeStopped
+	//}
+	//
+	//var db operationdb.Database
+	//var err error
+	//if n.config.DataDir == "" {
+	//	db = operationdb.NewMemoryDatabase()
+	//} else {
+	//root := n.ResolvePath(name)
+	//switch {
+	//case freezer == "":
+	//	freezer = filepath.Join(root, "ancient")
+	//case !filepath.IsAbs(freezer):
+	//	freezer = n.ResolvePath(freezer)
+	//}
+	//db, err = rawdb.NewLevelDBDatabaseWithFreezer(root, cache, handles, freezer, namespace, readonly)
+	//}
+	//
+	//if err == nil {
+	//	db = n.wrapDatabase(db)
+	//}
+	return db, err
 }

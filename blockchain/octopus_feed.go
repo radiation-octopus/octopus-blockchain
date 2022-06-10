@@ -66,9 +66,9 @@ func (f *Feed) remove(sub *feedSub) {
 
 	select {
 	case f.removeSub <- ch:
-		// Send will remove the channel from f.sendCases.
+		// Send将从f.sendCases中删除通道。
 	case <-f.sendLock:
-		// No Send is in progress, delete the channel now that we have the send lock.
+		// 没有发送正在进行，现在我们有了发送锁定，请删除频道。
 		f.sendCases = f.sendCases.delete(f.sendCases.find(ch))
 		f.sendLock <- struct{}{}
 	}
@@ -90,7 +90,7 @@ func (f *Feed) Send(value interface{}) (nsent int) {
 	f.once.Do(f.init)
 	<-f.sendLock
 
-	// Add new cases from the inbox after taking the send lock.
+	// 获取发送锁定后，从收件箱添加新案例。
 	f.mu.Lock()
 	f.sendCases = append(f.sendCases, f.inbox...)
 	f.inbox = nil
@@ -102,7 +102,7 @@ func (f *Feed) Send(value interface{}) (nsent int) {
 	}
 	f.mu.Unlock()
 
-	// Set the sent value on all channels.
+	// 在所有通道上设置发送值。
 	for i := firstSubSendCase; i < len(f.sendCases); i++ {
 		f.sendCases[i].Send = rvalue
 	}

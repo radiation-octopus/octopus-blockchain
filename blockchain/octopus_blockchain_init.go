@@ -8,4 +8,5 @@ func init() {
 	director.Register(new(BlockChainStart))
 	//把停止注入
 	director.Register(new(BlockChainStop))
+	director.Register(new(BlockChain))
 }

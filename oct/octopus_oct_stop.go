@@ -6,6 +6,6 @@ type OctopusStop struct {
 }
 
 func (bc *OctopusStop) Stop() {
-	Stop()
+	//Stop()
 	fmt.Println("BlockChain stop")
 }

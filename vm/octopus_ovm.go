@@ -101,21 +101,17 @@ type StateDB interface {
 	Suicide(entity.Address) bool
 	HasSuicided(entity.Address) bool
 
-	// Exist reports whether the given account exists in state.
-	// Notably this should also return true for suicided accounts.
+	// Exist报告给定帐户是否存在于状态。值得注意的是，对于自杀账户，这也应该是真的。
 	Exist(entity.Address) bool
-	// Empty returns whether the given account is empty. Empty
-	// is defined according to EIP161 (balance = nonce = code = 0).
+	// Empty返回给定帐户是否为空。根据EIP161定义为空（余额=nonce=代码=0）。
 	Empty(entity.Address) bool
 
-	//PrepareAccessList(sender blockchain.Address, dest *blockchain.Address, precompiles []blockchain.Address, txAccesses db.AccessList)
+	//PrepareAccessList（发送方区块链地址，目的地*区块链地址，预编译[]区块链地址，TXAccess数据库访问列表）
 	AddressInAccessList(addr entity.Address) bool
 	SlotInAccessList(addr entity.Address, slot entity.Hash) (addressOk bool, slotOk bool)
-	// AddAddressToAccessList adds the given address to the access list. This operation is safe to perform
-	// even if the feature/fork is not active yet
+	// AddAddressToAccessList将给定地址添加到访问列表中。即使功能/分叉尚未激活，也可以安全执行此操作
 	AddAddressToAccessList(addr entity.Address)
-	// AddSlotToAccessList adds the given (address,slot) to the access list. This operation is safe to perform
-	// even if the feature/fork is not active yet
+	// AddSlotToAccessList将给定的（地址、插槽）添加到访问列表中。即使功能/分叉尚未激活，也可以安全执行此操作
 	AddSlotToAccessList(addr entity.Address, slot entity.Hash)
 
 	RevertToSnapshot(int)
@@ -147,7 +143,7 @@ func NewOVMBlockContext(header *block.Header, chain ChainContext, author *entity
 
 	//
 	if author == nil {
-		beneficiary, _ = chain.Engine().Author(header) // Ignore error, we're past header validation
+		beneficiary, _ = chain.Engine().Author(header) // 忽略terr，我们已通过页眉验证
 	} else {
 		beneficiary = *author
 	}
@@ -173,7 +169,7 @@ func NewOVMBlockContext(header *block.Header, chain ChainContext, author *entity
 
 func (ovm *OVM) Call(caller ContractRef, addr entity.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	//深度限制
-	if ovm.depth > int(operationutils.CallCreateDepth) {
+	if ovm.depth > int(entity.CallCreateDepth) {
 		return nil, gas, errors.New("超过最大呼叫深度")
 	}
 	ovm.Context.Transfer(&ovm.operationdb, caller.Address(), addr, value)

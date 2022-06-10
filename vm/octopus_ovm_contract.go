@@ -50,7 +50,7 @@ type PrecompiledContract interface {
 type ecrecover struct{}
 
 func (c *ecrecover) RequiredGas(input []byte) uint64 {
-	return operationutils.EcrecoverGas
+	return entity.EcrecoverGas
 }
 func (c *ecrecover) Run(input []byte) ([]byte, error) {
 	const ecRecoverInputLength = 128
@@ -73,9 +73,9 @@ func (c *ecrecover) Run(input []byte) ([]byte, error) {
 	//copy(sig, input[64:128])
 	//sig[64] = v
 	//// v needs to be at the end for libsecp256k1
-	//pubKey, err := crypto.Ecrecover(input[:32], sig)
+	//pubKey, terr := crypto.Ecrecover(input[:32], sig)
 	//// make sure the public key is a valid one
-	//if err != nil {
+	//if terr != nil {
 	//	return nil, nil
 	//}
 	//

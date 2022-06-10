@@ -1,15 +1,31 @@
-package block
+package crypto
 
 import (
 	"bytes"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/utils"
+	"golang.org/x/crypto/sha3"
 	"sync"
 )
 
 // deriveBufferPool保存用于DeriveSha和TX编码的临时编码器缓冲区。
 var encodeBufferPool = sync.Pool{
 	New: func() interface{} { return new(bytes.Buffer) },
+}
+
+// hasherPool为rlpHash保存LegacyKeccak256哈希器。
+var hasherPool = sync.Pool{
+	New: func() interface{} { return sha3.NewLegacyKeccak256() },
+}
+
+// rlpHash对x进行编码，并对编码的字节进行哈希运算。
+func RlpHash(x interface{}) (h entity.Hash) {
+	sha := hasherPool.Get().(KeccakState)
+	defer hasherPool.Put(sha)
+	sha.Reset()
+	//rlp.Encode(sha, x)
+	sha.Read(h[:])
+	return h
 }
 
 // 可派生列表是DeriveSha的输入。

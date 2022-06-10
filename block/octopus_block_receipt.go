@@ -39,7 +39,7 @@ func (rs Receipts) EncodeIndex(i int, w *bytes.Buffer) {
 	//	rlp.Encode(w, data)
 	//default:
 	//	// For unsupported types, write nothing. Since this is for
-	//	// DeriveSha, the error will be caught matching the derived hash
+	//	// DeriveSha, the terr will be caught matching the derived hash
 	//	// to the block.
 	//}
 }
