@@ -8,11 +8,6 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 )
 
-//Ecrecover返回创建给定签名的未压缩公钥。
-func Ecrecover(hash, sig []byte) ([]byte, error) {
-	return nil, nil
-}
-
 // Sign计算ECDSA签名。
 //此函数容易受到选定的明文攻击，这些攻击可能会泄漏有关用于签名的私钥的信息。
 //呼叫者必须意识到对手无法选择给定摘要。常见的解决方案是在计算签名之前对任何输入进行散列。

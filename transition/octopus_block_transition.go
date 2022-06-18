@@ -175,7 +175,7 @@ func (st *StateTransition) buyGas() error {
 
 // 计算给定数据的gas费用
 func IntrinsicGas(data []byte) (uint64, error) {
-	// Set the starting gas for the raw transaction
+	// 设置原始交易的起始气体
 	var gas uint64
 	gas = entity.TxGas
 	//if isContractCreation && isHomestead {

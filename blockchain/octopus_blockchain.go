@@ -23,6 +23,8 @@ const (
 
 //blockchain结构体
 type BlockChain struct {
+	chainConfig *ChainConfig // 链和网络配置
+
 	db operationdb.Database //数据库
 
 	TxLookupLimit uint64 `autoInjectCfg:octopus.blockchain.binding.genesis.header.txLookupLimit"` //一个区块容纳最大交易限制
@@ -54,6 +56,19 @@ type BlockChain struct {
 
 type ChainConfig struct {
 	ChainID *big.Int `json:"chainId"` // chainId标识当前链并用于重播保护
+}
+
+//// IsLondon返回num是否等于或大于London fork块。
+//func (c *ChainConfig) IsLondon(num *big.Int) bool {
+//	return isForked(c.LondonBlock, num)
+//}
+
+//isForked返回在块s上调度的fork是否在给定的头块上处于活动状态。
+func isForked(s, head *big.Int) bool {
+	if s == nil || head == nil {
+		return false
+	}
+	return s.Cmp(head) <= 0
 }
 
 //迭代器
@@ -100,14 +115,14 @@ func (it *insertIterator) previous() *block.Header {
 func (bc *BlockChain) start() {
 	//构造创世区块
 	genesis := DefaultGenesisBlock()
-	SetupGenesisBlockWithOverride(bc.db, genesis, nil, nil)
+	chainConfig, _, _ := SetupGenesisBlockWithOverride(bc.db, genesis, nil, nil)
 	//打开内存数据库
 	chainDb, err := OpenDatabaseWithFreezer()
 	if err != nil {
 		errors.New("chainDb start failed")
 	}
 	//初始化区块链
-	bc, erro := newBlockChain(bc, chainDb, nil, nil)
+	bc, erro := newBlockChain(bc, chainDb, chainConfig, nil, nil)
 	if erro != nil {
 		errors.New("blockchain start fail")
 	}
@@ -128,12 +143,13 @@ func (bc *BlockChain) GetVMConfig() *vm.Config {
 }
 
 //构建区块链结构体
-func newBlockChain(bc *BlockChain, db operationdb.Database, engine consensus.Engine, shouldPreserve func(header *block.Header) bool) (*BlockChain, error) {
+func newBlockChain(bc *BlockChain, db operationdb.Database, chainConfig *ChainConfig, engine consensus.Engine, shouldPreserve func(header *block.Header) bool) (*BlockChain, error) {
 	futureBlocks, _ := lru.New(maxFutureBlocks)
 	bc.db = db
 	bc.quit = make(chan struct{})
 	bc.futureBlocks = futureBlocks
 	bc.engine = engine
+	bc.chainConfig = chainConfig
 	//bc = &BlockChain{
 	//	db:   db,
 	//	quit: make(chan struct{}),
@@ -353,7 +369,6 @@ func (bc *BlockChain) insertStopped() bool {
 }
 
 func (bc *BlockChain) procFutureBlocks() {
-	log.Info("新增区块：")
 	blocks := make([]*block.Block, 0, bc.futureBlocks.Len())
 	for _, hash := range bc.futureBlocks.Keys() {
 		if b, exist := bc.futureBlocks.Peek(hash); exist {
@@ -362,6 +377,7 @@ func (bc *BlockChain) procFutureBlocks() {
 	}
 	if len(blocks) > 0 {
 		for i := range blocks {
+			log.Debug("新增区块：")
 			bc.InsertChain(blocks[i : i+1])
 		}
 	}

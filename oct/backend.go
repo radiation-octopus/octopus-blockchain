@@ -3,6 +3,7 @@ package oct
 import (
 	"errors"
 	"fmt"
+	"github.com/radiation-octopus/octopus-blockchain/accounts"
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/blockchain"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
@@ -16,6 +17,8 @@ import (
 )
 
 type Octopus struct {
+	config *Config
+
 	// Handlers
 	txPool     *blockchain.TxPool
 	Blockchain *blockchain.BlockChain `autoInjectLang:"blockchain.BlockChain"`
@@ -28,18 +31,18 @@ type Octopus struct {
 	chainDb operationdb.Database // 区块链数据库
 
 	//eventMux       *event.TypeMux
-	engine consensus.Engine
-	//accountManager *accounts.Manager
+	engine         consensus.Engine
+	accountManager *accounts.Manager
 
 	//bloomRequests     chan chan *bloombits.Retrieval // 接收bloom数据检索请求的通道
 	//bloomIndexer      *core.ChainIndexer             // Bloom索引器在块导入期间运行
 	closeBloomHandler chan struct{}
 
-	//APIBackend *OctAPIBackend
+	//APIBackend *operationconsole.OctAPIBackend
 
-	miner     *miner.Miner
-	gasPrice  *big.Int
-	etherbase entity.Address
+	miner    *miner.Miner
+	gasPrice *big.Int
+	octWork  entity.Address
 
 	networkID uint64
 	//netRPCService *ethapi.PublicNetAPI
@@ -51,6 +54,9 @@ type Octopus struct {
 	//shutdownTracker *shutdowncheck.ShutdownTracker //跟踪节点是否已非正常关闭以及何时关闭
 }
 
+func (s *Octopus) GetCfg() *Config                    { return s.config }
+func (s *Octopus) AccountManager() *accounts.Manager  { return s.accountManager }
+func (s *Octopus) ChainDb() operationdb.Database      { return s.chainDb }
 func (s *Octopus) BlockChain() *blockchain.BlockChain { return s.Blockchain }
 func (s *Octopus) TxPool() *blockchain.TxPool         { return s.txPool }
 func (oct *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationdb.OperationDB, checkLive bool, preferDisk bool) (statedb *operationdb.OperationDB, err error) {
@@ -181,10 +187,13 @@ type Config struct {
 	DatabaseHandles int `toml:"-"`
 	DatabaseCache   int
 
-	// Transaction pool options
+	//事务池选项
 	TxPool blockchain.TxPoolConfig
 
 	Miner miner.Config
+
+	// RPCTxFeeCap是发送交易变体的全局交易费（价格*gaslimit）上限。单位为oct。
+	RPCTxFeeCap float64
 }
 
 func (oct *Octopus) start() {
@@ -207,33 +216,120 @@ func New(oct *Octopus) (*Octopus, error) {
 		DatabaseHandles: 256,
 		TxPool:          blockchain.DefaultTxPoolConfig,
 		//GPO:             ethconfig.Defaults.GPO,
-		//Ethash:          ethconfig.Defaults.Ethash,
+		//Octell:          ethconfig.Defaults.Octell,
 		Miner: miner.Config{
 			Etherbase: entity.Address{1},
 			GasCeil:   genesis.GasLimit * 11 / 10,
 			GasPrice:  big.NewInt(1),
 			Recommit:  time.Second,
 		},
+		RPCTxFeeCap: 1,
 	}
-	//oct := &Octopus{
-	//	//config:            config,
+	var (
+		backends []accounts.Backend
+		n, p     = accounts.StandardScryptN, accounts.StandardScryptP
+	)
+	backends = append(backends, accounts.NewKeyStore("keystore", n, p))
+	//oct = &Octopus{
+	//	config : 			cfg,
 	//	//merger:            merger,
 	//	//eventMux:          stack.EventMux(),
-	//	//accountManager:    stack.AccountManager(),
+	//	accountManager:    	accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: true},backends...),
 	//	//engine:            ethconfig.CreateConsensusEngine(stack, chainConfig, &ethashConfig, config.Miner.Notify, config.Miner.Noverify, chainDb),
-	//	closeBloomHandler: make(chan struct{}),
-	//	Blockchain: bc,
-	//	//networkID:         config.NetworkId,
-	//	//gasPrice:          config.Miner.GasPrice,
+	//	closeBloomHandler: 	make(chan struct{}),
+	//	txPool: 			blockchain.NewTxPool(blockchain.DefaultTxPoolConfig, oct.Blockchain),
+	//	//miner :				miner.New(oct, &cfg.Miner, oct.engine),
+	//	networkID:         cfg.NetworkId,
+	//	gasPrice:          	cfg.Miner.GasPrice,
 	//	//etherbase:         config.Miner.Etherbase,
-	//	////bloomRequests:     make(chan chan *bloombits.Retrieval),
-	//	//bloomIndexer:      core.NewBloomIndexer(chainDb, params.BloomBitsBlocks, params.BloomConfirms)
+	//	//bloomRequests:     make(chan chan *bloombits.Retrieval),
+	//	//bloomIndexer:      core.NewBloomIndexer(chainDb, params.BloomBitsBlocks, params.BloomConfirms),
 	//	//p2pServer:         stack.Server(),
 	//	//shutdownTracker:   shutdowncheck.NewShutdownTracker(chainDb),
 	//}
+	oct.config = cfg
+	oct.accountManager = accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: true}, backends...)
 	oct.closeBloomHandler = make(chan struct{})
 	oct.txPool = blockchain.NewTxPool(blockchain.DefaultTxPoolConfig, oct.Blockchain)
+	oct.networkID = cfg.NetworkId
+	oct.gasPrice = cfg.Miner.GasPrice
 	oct.miner = miner.New(oct, &cfg.Miner, oct.engine)
-
 	return oct, nil
+}
+
+func (s *Octopus) IsMining() bool { return s.miner.Mining() }
+
+// StartMining使用给定数量的CPU线程启动miner。
+//如果挖掘已在运行，此方法将调整允许使用的线程数，并更新事务池所需的最低价格。
+func (s *Octopus) StartMining(threads int) error {
+	// 更新共识引擎中的线程数
+	type threaded interface {
+		SetThreads(threads int)
+	}
+	if th, ok := s.engine.(threaded); ok {
+		log.Info("Updated mining threads", "threads", threads)
+		if threads == 0 {
+			threads = -1 // 从内部禁用矿工
+		}
+		th.SetThreads(threads)
+	}
+	// 如果矿工没有运行，初始化它
+	if !s.IsMining() {
+		// 将初始价格点传播到交易池
+		s.lock.RLock()
+		price := s.gasPrice
+		s.lock.RUnlock()
+		s.txPool.SetGasPrice(price)
+
+		// 配置本地工作地址
+		eb, err := s.OctWork()
+		if err != nil {
+			log.Error("Cannot start mining without etherbase", "err", err)
+			return fmt.Errorf("etherbase missing: %v", err)
+		}
+		//var cli *clique.Clique
+		//if c, ok := s.engine.(*clique.Clique); ok {
+		//	cli = c
+		//} else if cl, ok := s.engine.(*beacon.Beacon); ok {
+		//	if c, ok := cl.InnerEngine().(*clique.Clique); ok {
+		//		cli = c
+		//	}
+		//}
+		//if cli != nil {
+		//	wallet, err := s.accountManager.Find(accounts.Account{Address: eb})
+		//	if wallet == nil || err != nil {
+		//		log.Error("Etherbase account unavailable locally", "err", err)
+		//		return fmt.Errorf("signer missing: %v", err)
+		//	}
+		//	cli.Authorize(eb, wallet.SignData)
+		//}
+		//// 如果开始挖掘，我们可以禁用为加快同步时间而引入的事务拒绝机制。
+		//atomic.StoreUint32(&s.handler.acceptTxs, 1)
+
+		go s.miner.Start(eb)
+	}
+	return nil
+}
+
+func (s *Octopus) OctWork() (eb entity.Address, err error) {
+	s.lock.RLock()
+	octWork := s.octWork
+	s.lock.RUnlock()
+
+	if octWork != (entity.Address{}) {
+		return octWork, nil
+	}
+	if wallets := s.AccountManager().Wallets(); len(wallets) > 0 {
+		if accounts := wallets[0].Accounts(); len(accounts) > 0 {
+			octWork := accounts[0].Address
+
+			s.lock.Lock()
+			s.octWork = octWork
+			s.lock.Unlock()
+
+			log.Info("OctWork automatically configured", "address", octWork)
+			return octWork, nil
+		}
+	}
+	return entity.Address{}, fmt.Errorf("etherbase must be explicitly specified")
 }

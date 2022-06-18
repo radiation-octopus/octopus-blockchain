@@ -117,8 +117,10 @@ type OperationDB struct {
 }
 
 func (o *OperationDB) CreateAccount(address entity.Address) {
-
-	panic("implement me")
+	newObj, prev := o.createObject(address)
+	if prev != nil {
+		newObj.setBalance(prev.data.Balance)
+	}
 }
 
 //子平衡从与addr关联的帐户中减去金额。
@@ -187,9 +189,9 @@ func (o *OperationDB) GetNonce(address entity.Address) uint64 {
 }
 
 func (o *OperationDB) SetNonce(address entity.Address, nonce uint64) {
-	stateObject := o.GetOrNewOperationObject(address)
-	if stateObject != nil {
-		stateObject.SetNonce(nonce)
+	operationObject := o.GetOrNewOperationObject(address)
+	if operationObject != nil {
+		operationObject.SetNonce(nonce)
 	}
 }
 

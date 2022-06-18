@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"container/heap"
 	"errors"
+	"fmt"
+	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
@@ -55,7 +57,15 @@ type TxData interface {
 	setSignatureValues(chainID, v, r, s *big.Int)
 }
 
+// ChainId返回事务的EIP155链ID。返回值将始终为非nil。对于不受重播保护的旧事务，返回值为零。
+func (tx *Transaction) ChainId() *big.Int {
+	return tx.inner.chainID()
+}
+
 func (tx *Transaction) Data() []byte { return tx.inner.data() }
+
+// AccessList返回事务的访问列表。
+//func (tx *Transaction) AccessList() AccessList { return tx.inner.accessList() }
 
 // 返回交易的gas限制
 func (tx *Transaction) Gas() uint64 { return tx.inner.gas() }
@@ -86,12 +96,11 @@ func (tx *Transaction) Hash() entity.Hash {
 		return hash.(entity.Hash)
 	}
 	var h entity.Hash
-	//if tx.Type() == LegacyTxType {
-	//	h = rlpHash(tx.inner)
-	//} else {
-	//	h = prefixedRlpHash(tx.Type(), tx.inner)
-	//}
-	h = entity.Hash{0}
+	if tx.Type() == LegacyTxType {
+		h = crypto.RlpHash(tx.inner)
+	} else {
+		h = crypto.PrefixedRlpHash(tx.Type(), tx.inner)
+	}
 	tx.hash.Store(h)
 	return h
 }
@@ -207,6 +216,16 @@ func (tx *Transaction) AsMessage(s Signer, baseFee *big.Int) (Message, error) {
 	return msg, err
 }
 
+// Protected表示事务是否受重播保护。
+func (tx *Transaction) Protected() bool {
+	switch tx := tx.inner.(type) {
+	case *LegacyTx:
+		return tx.V != nil && isProtectedV(tx.V)
+	default:
+		return true
+	}
+}
+
 type Transactions []*Transaction
 
 func (s Transactions) Len() int { return len(s) }
@@ -229,6 +248,8 @@ func (tx *Transaction) setDecoded(inner TxData, size int) {
 // WithSignature返回具有给定签名的新事务。此签名需要采用[R | | S | V]格式，其中V为0或1。
 func (tx *Transaction) WithSignature(signer Signer, sig []byte) (*Transaction, error) {
 	r, s, v, err := signer.SignatureValues(tx, sig)
+	a := v.BitLen()
+	fmt.Println(a)
 	if err != nil {
 		return nil, err
 	}
@@ -435,7 +456,7 @@ func (tx *LegacyTx) copy() TxData {
 		To:    copyAddressPtr(tx.To),
 		Data:  utils.CopyBytes(tx.Data),
 		Gas:   tx.Gas,
-		// These are initialized below.
+		// 下面对其进行了初始化。
 		Value:    new(big.Int),
 		GasPrice: new(big.Int),
 		V:        new(big.Int),
@@ -512,4 +533,94 @@ func deriveChainId(v *big.Int) *big.Int {
 	}
 	v = new(big.Int).Sub(v, big.NewInt(35))
 	return v.Div(v, big.NewInt(2))
+}
+
+func isProtectedV(V *big.Int) bool {
+	if V.BitLen() <= 8 {
+		v := V.Uint64()
+		return v != 27 && v != 28 && v != 1 && v != 0
+	}
+	//任何不是27或28的都被视为受保护
+	return true
+}
+
+type DynamicFeeTx struct {
+	ChainID   *big.Int
+	Nonce     uint64
+	GasTipCap *big.Int // a.k.a. maxPriorityFeePerGas
+	GasFeeCap *big.Int // a.k.a. maxFeePerGas
+	Gas       uint64
+	To        *entity.Address `rlp:"nil"` // nil表示合同创建
+	Value     *big.Int
+	Data      []byte
+	//AccessList AccessList
+
+	// 签名值
+	V *big.Int `json:"v" gencodec:"required"`
+	R *big.Int `json:"r" gencodec:"required"`
+	S *big.Int `json:"s" gencodec:"required"`
+}
+
+// copy创建事务数据的深度副本并初始化所有字段。
+func (tx *DynamicFeeTx) copy() TxData {
+	cpy := &DynamicFeeTx{
+		Nonce: tx.Nonce,
+		To:    copyAddressPtr(tx.To),
+		Data:  utils.CopyBytes(tx.Data),
+		Gas:   tx.Gas,
+		// 这些内容复制如下。
+		//AccessList: make(AccessList, len(tx.AccessList)),
+		Value:     new(big.Int),
+		ChainID:   new(big.Int),
+		GasTipCap: new(big.Int),
+		GasFeeCap: new(big.Int),
+		V:         new(big.Int),
+		R:         new(big.Int),
+		S:         new(big.Int),
+	}
+	//copy(cpy.AccessList, tx.AccessList)
+	if tx.Value != nil {
+		cpy.Value.Set(tx.Value)
+	}
+	if tx.ChainID != nil {
+		cpy.ChainID.Set(tx.ChainID)
+	}
+	if tx.GasTipCap != nil {
+		cpy.GasTipCap.Set(tx.GasTipCap)
+	}
+	if tx.GasFeeCap != nil {
+		cpy.GasFeeCap.Set(tx.GasFeeCap)
+	}
+	if tx.V != nil {
+		cpy.V.Set(tx.V)
+	}
+	if tx.R != nil {
+		cpy.R.Set(tx.R)
+	}
+	if tx.S != nil {
+		cpy.S.Set(tx.S)
+	}
+	return cpy
+}
+
+// innerTx的访问器。
+func (tx *DynamicFeeTx) txType() byte      { return DynamicFeeTxType }
+func (tx *DynamicFeeTx) chainID() *big.Int { return tx.ChainID }
+
+//func (tx *DynamicFeeTx) accessList() AccessList { return tx.AccessList }
+func (tx *DynamicFeeTx) data() []byte        { return tx.Data }
+func (tx *DynamicFeeTx) gas() uint64         { return tx.Gas }
+func (tx *DynamicFeeTx) gasFeeCap() *big.Int { return tx.GasFeeCap }
+func (tx *DynamicFeeTx) gasTipCap() *big.Int { return tx.GasTipCap }
+func (tx *DynamicFeeTx) gasPrice() *big.Int  { return tx.GasFeeCap }
+func (tx *DynamicFeeTx) value() *big.Int     { return tx.Value }
+func (tx *DynamicFeeTx) nonce() uint64       { return tx.Nonce }
+func (tx *DynamicFeeTx) to() *entity.Address { return tx.To }
+
+func (tx *DynamicFeeTx) rawSignatureValues() (v, r, s *big.Int) {
+	return tx.V, tx.R, tx.S
+}
+
+func (tx *DynamicFeeTx) setSignatureValues(chainID, v, r, s *big.Int) {
+	tx.ChainID, tx.V, tx.R, tx.S = chainID, v, r, s
 }

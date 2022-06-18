@@ -2,7 +2,10 @@ package crypto
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
+	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"golang.org/x/crypto/sha3"
@@ -30,6 +33,15 @@ type KeccakState interface {
 // NewKeccakState创建新的KeccakState
 func NewKeccakState() KeccakState {
 	return sha3.NewLegacyKeccak256().(KeccakState)
+}
+
+// Keccak512计算并返回输入数据的Keccak512哈希。
+func Keccak512(data ...[]byte) []byte {
+	d := sha3.NewLegacyKeccak512()
+	for _, b := range data {
+		d.Write(b)
+	}
+	return d.Sum(nil)
 }
 
 // Keccak256计算并返回输入数据的Keccak256哈希。
@@ -76,3 +88,52 @@ func zeroBytes(bytes []byte) {
 		bytes[i] = 0
 	}
 }
+
+// ToecdsanSafe盲目地将二进制blob转换为私钥。除非您确信输入有效，并且希望避免由于错误的原点编码（0个前缀被截断）而导致的错误，否则几乎不应该使用它。
+func ToECDSAUnsafe(d []byte) *ecdsa.PrivateKey {
+	priv, _ := toECDSA(d, false)
+	return priv
+}
+
+//toECDSA使用给定的D值创建私钥。strict参数控制键的长度是应强制为曲线大小，还是还可以接受传统编码（0个前缀）。
+func toECDSA(d []byte, strict bool) (*ecdsa.PrivateKey, error) {
+	priv := new(ecdsa.PrivateKey)
+	priv.PublicKey.Curve = S256()
+	if strict && 8*len(d) != priv.Params().BitSize {
+		return nil, fmt.Errorf("invalid length, need %d bits", priv.Params().BitSize)
+	}
+	priv.D = new(big.Int).SetBytes(d)
+
+	// priv.D必须<N
+	if priv.D.Cmp(secp256k1N) >= 0 {
+		return nil, fmt.Errorf("invalid private key, >=N")
+	}
+	// priv.D不得为零或负。
+	if priv.D.Sign() <= 0 {
+		return nil, fmt.Errorf("invalid private key, zero or negative")
+	}
+
+	priv.PublicKey.X, priv.PublicKey.Y = priv.PublicKey.Curve.ScalarBaseMult(d)
+	if priv.PublicKey.X == nil {
+		return nil, errors.New("invalid private key")
+	}
+	return priv, nil
+}
+
+func PubkeyToAddress(p ecdsa.PublicKey) entity.Address {
+	pubBytes := FromECDSAPub(&p)
+	return entity.BytesToAddress(Keccak256(pubBytes[1:])[12:])
+}
+
+func FromECDSAPub(pub *ecdsa.PublicKey) []byte {
+	if pub == nil || pub.X == nil || pub.Y == nil {
+		return nil
+	}
+	return elliptic.Marshal(S256(), pub.X, pub.Y)
+}
+
+// CreateAddress在给定字节和nonce的情况下创建章鱼地址
+//func CreateAddress(b entity.Address, nonce uint64) entity.Address {
+//	data, _ := rlp.EncodeToBytes([]interface{}{b, nonce})
+//	return entity.BytesToAddress(Keccak256()[12:])
+//}

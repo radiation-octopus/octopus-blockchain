@@ -23,6 +23,11 @@ func EncodeNonce(i uint64) BlockNonce {
 	return n
 }
 
+// Uint64返回块nonce的整数值。
+func (n BlockNonce) Uint64() uint64 {
+	return binary.BigEndian.Uint64(n[:])
+}
+
 //区块头结构体
 type Header struct {
 	ParentHash  entity.Hash    `autoInjectCfg:"octopus.blockchain.binding.genesis.header.parentHash"` //父hash
@@ -155,6 +160,17 @@ func (b *Block) WithBody(transactions []*Transaction, uncles []*Header) *Block {
 		block.uncles[i] = CopyHeader(uncles[i])
 	}
 	return block
+}
+
+// WithSeal返回一个新块，其中包含来自b的数据，但标头替换为密封的数据块。
+func (b *Block) WithSeal(header *Header) *Block {
+	cpy := *header
+
+	return &Block{
+		header:       &cpy,
+		transactions: b.transactions,
+		uncles:       b.uncles,
+	}
 }
 
 func CopyHeader(h *Header) *Header {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/prometheus/tsdb/fileutil"
+	"github.com/radiation-octopus/octopus-blockchain/accounts"
 	"github.com/radiation-octopus/octopus-blockchain/blockchain"
 	"github.com/radiation-octopus/octopus-blockchain/oct"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
@@ -202,7 +203,7 @@ func getKeyStoreDir(conf *Config) (string, bool, error) {
 	isEphemeral := false
 	if keydir == "" {
 		// 没有datadir。
-		//keydir, err = os.MkdirTemp("", "go-ethereum-keystore")
+		//keydir, err = os.MkdirTemp("", "keystore")
 		isEphemeral = true
 	}
 
@@ -226,7 +227,7 @@ const (
 type Node struct {
 	//eventmux      *event.TypeMux
 	config     *Config
-	accman     *Manager
+	accman     *accounts.Manager
 	log        log.OctopusLog
 	keyDir     string            // 密钥存储目录
 	keyDirTemp bool              // 如果为true，则Stop将删除密钥目录
@@ -291,6 +292,11 @@ func (n *Node) Start() error {
 	return nil
 }
 
+//AccountManager检索协议堆栈使用的帐户管理器。
+func (n *Node) AccountManager() *accounts.Manager {
+	return n.accman
+}
+
 func (n *Node) openDataDir() error {
 	if n.config.DataDir == "" {
 		return nil // 短暂的
@@ -342,7 +348,7 @@ func makeFullNode() (*Node, *oct.Octopus, error) {
 	//	DatabaseHandles: 256,
 	//	TxPool:          blockchain.DefaultTxPoolConfig,
 	//	//GPO:             ethconfig.Defaults.GPO,
-	//	//Ethash:          ethconfig.Defaults.Ethash,
+	//	//Octell:          ethconfig.Defaults.Octell,
 	//	Miner: miner.Config{
 	//		GasFloor: genesis.GasLimit * 9 / 10,
 	//		GasCeil:  genesis.GasLimit * 11 / 10,
@@ -416,7 +422,7 @@ func NewNodeCfg(conf *Config) (*Node, error) {
 	node.keyDir = keyDir
 	node.keyDirTemp = isEphem
 	//创建没有后端的空AccountManager。稍后需要调用方（例如cmd/geth）添加后端。
-	node.accman = NewManager(&Config{InsecureUnlockAllowed: conf.InsecureUnlockAllowed})
+	node.accman = accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: conf.InsecureUnlockAllowed})
 
 	// 初始化p2p服务器。这将创建节点密钥和发现数据库。
 	//node.server.Config.PrivateKey = node.config.NodeKey()
@@ -465,7 +471,7 @@ func validatePrefix(what, path string) error {
 	return nil
 }
 
-// makeGenesis creates a custom Ethash genesis block based on some pre-defined
+// makeGenesis creates a custom Octell genesis block based on some pre-defined
 // faucet accounts.
 func makeGenesis(faucets []*ecdsa.PrivateKey) *blockchain.Genesis {
 	genesis := blockchain.DefaultRopstenGenesisBlock()

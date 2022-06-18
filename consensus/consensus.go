@@ -47,7 +47,7 @@ type Engine interface {
 	SealHash(header *block.Header) entity.Hash
 }
 
-// FinalizeAndAssemble implements consensus.Engine
+// FinalizeAndAssemble 实现 consensus.Engine
 //累积区块和叔块奖励，设定最终状态并组装积木区块。
 //func (ethash *Ethash) FinalizeAndAssemble(chain ChainHeaderReader, header *block.Header, state *db.OperationDB, txs []*block.Transaction, uncles []*block.Header, receipts []*block.Receipt) (*block.Block, terr) {
 //	// Finalize block

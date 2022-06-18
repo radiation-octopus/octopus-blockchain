@@ -1,6 +1,11 @@
 package entity
 
-import "github.com/radiation-octopus/octopus/utils"
+import (
+	"encoding/hex"
+	"github.com/radiation-octopus/octopus-blockchain/operationutils"
+	"github.com/radiation-octopus/octopus/utils"
+	"golang.org/x/crypto/sha3"
+)
 
 //定义hash和地址长度byte
 const (
@@ -44,6 +49,50 @@ func (a *Address) SetBytes(b []byte) {
 	copy(a[AddressLength-len(b):], b)
 }
 
+//HexToAddress返回字节值为s的地址。如果s大于len（h），则s将从左侧裁剪。
+func HexToAddress(s string) Address { return BytesToAddress(operationutils.FromHex(s)) }
+
+// Bytes获取基础哈希的字节表示形式。
+func (h Hash) Bytes() []byte { return h[:] }
+
+// String 实现 fmt.Stringer.
+func (a Address) String() string {
+	return a.Hex()
+}
+
+//Hex返回地址的符合EIP55的十六进制字符串表示形式。
+func (a Address) Hex() string {
+	return string(a.checksumHex())
+}
+
+func (a *Address) checksumHex() []byte {
+	buf := a.hex()
+
+	// 计算校验和
+	sha := sha3.NewLegacyKeccak256()
+	sha.Write(buf[2:])
+	hash := sha.Sum(nil)
+	for i := 2; i < len(buf); i++ {
+		hashByte := hash[(i-2)/2]
+		if i%2 == 0 {
+			hashByte = hashByte >> 4
+		} else {
+			hashByte &= 0xf
+		}
+		if buf[i] > '9' && hashByte > 7 {
+			buf[i] -= 32
+		}
+	}
+	return buf[:]
+}
+
+func (a Address) hex() []byte {
+	var buf [len(a)*2 + 2]byte
+	copy(buf[:2], "0x")
+	hex.Encode(buf[2:], a[:])
+	return buf[:]
+}
+
 type Bytes []byte
 
 // 十六进制将哈希转换为十六进制字符串。
@@ -62,8 +111,7 @@ func BytesToHash(b []byte) Hash {
 	return hash
 }
 
-// SetBytes sets the hash to the value of b.
-// If b is larger than len(h), b will be cropped from the left.
+//SetBytes将哈希值设置为b。如果b大于len（h），则b将从左侧裁剪。
 func (h *Hash) SetBytes(b []byte) {
 	if len(b) > len(h) {
 		b = b[len(b)-HashLength:]

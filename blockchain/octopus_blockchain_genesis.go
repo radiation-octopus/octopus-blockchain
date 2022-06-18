@@ -111,11 +111,12 @@ func DefaultRopstenGenesisBlock() *Genesis {
 
 // DefaultGenesisBlock返回以太坊主网络genesis块。
 func DefaultGenesisBlock() *Genesis {
+	id := big.NewInt(666)
 	return &Genesis{
-		Config:     &ChainConfig{},
+		Config:     &ChainConfig{ChainID: id},
 		Nonce:      66,
 		ExtraData:  utils.Hex2Bytes("0x11bbe8db4e347b4e8c937c1c8370e4b5ed33adb3db69cbdb7a38e1e50b1b82fa"),
-		GasLimit:   5000,
+		GasLimit:   50000,
 		Difficulty: big.NewInt(17179869184),
 		//Alloc:      decodePrealloc(mainnetAllocData),
 	}
@@ -230,5 +231,7 @@ func SetupGenesisBlockWithOverride(db operationdb.Database, genesis *Genesis, ov
 	//	return newcfg, stored, compatErr
 	//}
 	//rawdb.WriteChainConfig(db, stored, newcfg)
-	return nil, stored, nil
+	return &ChainConfig{
+		ChainID: big.NewInt(666),
+	}, stored, nil
 }

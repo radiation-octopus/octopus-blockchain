@@ -100,3 +100,6 @@ func (bc *BlockChain) GetBlocksFromHash(hash entity.Hash, n int) (blocks []*bloc
 	}
 	return
 }
+
+// Config检索链的fork配置。
+func (bc *BlockChain) Config() *ChainConfig { return bc.chainConfig }

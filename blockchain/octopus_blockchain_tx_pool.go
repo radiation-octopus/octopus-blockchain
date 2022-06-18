@@ -3,7 +3,6 @@ package blockchain
 import (
 	"container/heap"
 	"errors"
-	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
@@ -101,6 +100,13 @@ func (sc *SubscriptionScope) Close() {
 		s.s.Unsubscribe()
 	}
 	sc.subs = nil
+}
+
+// Count返回跟踪的订阅数。它用于调试。
+func (sc *SubscriptionScope) Count() int {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return len(sc.subs)
 }
 
 type scopeSub struct {
@@ -576,6 +582,8 @@ func (pool *TxPool) reset(oldHead, newHead *block.Header) {
 	//pool.istanbul = pool.chainconfig.IsIstanbul(next)
 	//pool.eip2718 = pool.chainconfig.IsBerlin(next)
 	//pool.eip1559 = pool.chainconfig.IsLondon(next)
+	pool.eip2718 = true
+	pool.eip1559 = true
 }
 
 // add验证事务并将其插入到不可执行队列中，以便稍后挂起升级和执行。
@@ -674,6 +682,34 @@ func (pool *TxPool) add(tx *block.Transaction, local bool) (replaced bool, err e
 
 	log.Info("Pooled new future transaction", "hash", hash, "from", from, "to", tx.To())
 	return replaced, nil
+}
+
+// Nonce返回帐户的下一个Nonce，池中可执行的所有事务都已在其顶部应用。
+func (pool *TxPool) Nonce(addr entity.Address) uint64 {
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	return pool.pendingNonces.get(addr)
+}
+
+//SetGasPrice更新新交易的交易池所需的最低价格，并将所有低于此阈值的交易删除。
+func (pool *TxPool) SetGasPrice(price *big.Int) {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+
+	old := pool.gasPrice
+	pool.gasPrice = price
+	// 如果min miner费用增加，则删除低于新阈值的交易
+	if price.Cmp(old) > 0 {
+		// 水塘定价是按GasFeeCap排序的，所以我们必须遍历池。全部取而代之
+		drop := pool.all.RemotesBelowTip(price)
+		for _, tx := range drop {
+			pool.removeTx(tx.Hash(), false)
+		}
+		pool.priced.Removed(len(drop))
+	}
+
+	log.Info("Transaction pool price threshold updated", "price", price)
 }
 
 // promoteExecutables将可处理的事务从未来队列移动到挂起的事务集。在此过程中，将删除所有无效事务（低nonce、低余额）。
@@ -987,7 +1023,7 @@ func (pool *TxPool) truncateQueue() {
 			//queuedRateLimitMeter.Mark(int64(size))
 			continue
 		}
-		// Otherwise drop only last few transactions
+		// 否则，只删除最后几个事务
 		txs := list.Flatten()
 		for i := len(txs) - 1; i >= 0 && drop > 0; i-- {
 			pool.removeTx(txs[i].Hash(), true)
@@ -1121,6 +1157,18 @@ func (pool *TxPool) addTxs(txs []*block.Transaction, local, sync bool) []error {
 	return errs
 }
 
+func AddBalance(pool *TxPool, addr entity.Address, amount *big.Int) {
+	pool.mu.Lock()
+	pool.currentState.AddBalance(addr, amount)
+	pool.mu.Unlock()
+}
+
+func SetNonce(pool *TxPool, addr entity.Address, nonce uint64) {
+	pool.mu.Lock()
+	pool.currentState.SetNonce(addr, nonce)
+	pool.mu.Unlock()
+}
+
 //addTxsLocked尝试将一批有效的事务排队。必须持有事务池锁。
 func (pool *TxPool) addTxsLocked(txs []*block.Transaction, local bool) ([]error, *accountSet) {
 	dirty := newAccountSet(pool.signer)
@@ -1236,10 +1284,10 @@ func (pool *TxPool) loop() {
 	// 通知测试初始化阶段已完成
 	close(pool.InitDoneCh)
 	for {
-		fmt.Println("循环处理chainhead")
 		select {
 		// 处理ChainHeadEvent
 		case ev := <-pool.chainHeadCh:
+			log.Debug("循环处理chainhead")
 			if ev.Block != nil {
 				pool.requestReset(head.Header(), ev.Block.Header())
 				head = ev.Block
@@ -1340,6 +1388,10 @@ func (pool *TxPool) Stop() {
 	//	pool.journal.close()
 	//}
 	log.Info("Transaction pool stopped")
+}
+
+func (pool *TxPool) GetBalance(address entity.Address) *big.Int {
+	return pool.currentState.GetBalance(address)
 }
 
 // addressByHeartbeat是一个带有最后一个活动时间戳的帐户地址。
@@ -1899,7 +1951,7 @@ func (t *txLookup) Add(tx *block.Transaction, local bool) {
 	}
 }
 
-// Get returns a transaction if it exists in the lookup, or nil if not found.
+// Get如果在查找中存在事务，则返回事务；如果未找到事务，则返回nil。
 func (t *txLookup) Get(hash entity.Hash) *block.Transaction {
 	t.lock.RLock()
 	defer t.lock.RUnlock()
@@ -1940,6 +1992,18 @@ func (t *txLookup) RemoteToLocals(locals *accountSet) int {
 		}
 	}
 	return migrated
+}
+
+// RemotesBelowTip查找低于给定tip阈值的所有远程事务。
+func (t *txLookup) RemotesBelowTip(threshold *big.Int) block.Transactions {
+	found := make(block.Transactions, 0, 128)
+	t.Range(func(hash entity.Hash, tx *block.Transaction, local bool) bool {
+		if tx.GasTipCapIntCmp(threshold) < 0 {
+			found = append(found, tx)
+		}
+		return true
+	}, false, true) // 仅迭代远程
+	return found
 }
 
 // numSlots计算单个事务所需的插槽数。
