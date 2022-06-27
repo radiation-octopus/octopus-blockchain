@@ -159,6 +159,11 @@ func newTypeCache() *typeCache {
 	return c
 }
 
+func cachedDecoder(typ reflect.Type) (decoder, error) {
+	info := theTC.info(typ)
+	return info.decoder, info.decoderErr
+}
+
 //typeNilKind为指向“typ”的nil指针提供RLP值种类。
 func typeNilKind(typ reflect.Type, tags rlpstruct.Tags) Kind {
 	styp := rtypeToStructType(typ, nil)

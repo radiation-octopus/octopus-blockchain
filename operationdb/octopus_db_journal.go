@@ -23,3 +23,55 @@ func NewJournal() *Journal {
 		Dirties: make(map[entity.Address]int),
 	}
 }
+
+// append在更改日志的末尾插入新的修改条目。
+func (j *Journal) append(entry journalEntry) {
+	j.entries = append(j.entries, entry)
+	if addr := entry.dirtied(); addr != nil {
+		j.Dirties[*addr]++
+	}
+}
+
+type (
+	// 对帐户trie的更改。
+	createObjectChange struct {
+		account *entity.Address
+	}
+	resetObjectChange struct {
+		prev         *OperationObject
+		prevdestruct bool
+	}
+
+	codeChange struct {
+		account            *entity.Address
+		prevcode, prevhash []byte
+	}
+)
+
+func (ch codeChange) revert(o *OperationDB) {
+	o.getStateObject(*ch.account).setCode(entity.BytesToHash(ch.prevhash), ch.prevcode)
+}
+
+func (ch codeChange) dirtied() *entity.Address {
+	return ch.account
+}
+
+func (ch createObjectChange) revert(db *OperationDB) {
+	delete(db.OperationObjects, *ch.account)
+	delete(db.OperationObjectsDirty, *ch.account)
+}
+
+func (ch createObjectChange) dirtied() *entity.Address {
+	return ch.account
+}
+
+func (r resetObjectChange) revert(db *OperationDB) {
+	db.setOperationObject(r.prev)
+	//if !r.prevdestruct && db.snap != nil {
+	//	delete(s.snapDestructs, ch.prev.addrHash)
+	//}
+}
+
+func (r resetObjectChange) dirtied() *entity.Address {
+	return nil
+}

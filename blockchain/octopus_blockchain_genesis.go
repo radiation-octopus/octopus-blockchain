@@ -1,25 +1,30 @@
 package blockchain
 
 import (
+	"encoding/json"
 	"errors"
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/memorydb"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
+	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationutils"
+	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus/log"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
+	"strings"
 )
 
 type Genesis struct {
-	Config     *ChainConfig   `json:"config"`
-	Nonce      uint64         `json:"nonce"`
-	Timestamp  uint64         `json:"timestamp"`
-	ExtraData  []byte         `json:"extraData"`
-	GasLimit   uint64         `json:"gasLimit"   gencodec:"required"`
-	Difficulty *big.Int       `json:"difficulty" gencodec:"required"`
-	Mixhash    entity.Hash    `json:"mixHash"`
-	Coinbase   entity.Address `json:"coinbase"`
-	//Alloc      GenesisAlloc        `json:"alloc"      gencodec:"required"`
+	Config     *entity.ChainConfig `json:"config"`
+	Nonce      uint64              `json:"nonce"`
+	Timestamp  uint64              `json:"timestamp"`
+	ExtraData  []byte              `json:"extraData"`
+	GasLimit   uint64              `json:"gasLimit"   gencodec:"required"`
+	Difficulty *big.Int            `json:"difficulty" gencodec:"required"`
+	Mixhash    entity.Hash         `json:"mixHash"`
+	Coinbase   entity.Address      `json:"coinbase"`
+	Alloc      GenesisAlloc        `json:"alloc"      gencodec:"required"`
 
 	//这些字段用于一致性测试。请不要在实际的genesis区块中使用它们。
 	Number     uint64      `json:"number"`
@@ -36,7 +41,7 @@ func (g *Genesis) Commit(db operationdb.Database) (*block.Block, error) {
 	}
 	config := g.Config
 	if config == nil {
-		config = AllEthashProtocolChanges
+		config = AllOctellProtocolChanges
 	}
 	//if err := config.CheckConfigForkOrder(); err != nil {
 	//	return nil, err
@@ -60,13 +65,13 @@ func (g *Genesis) Commit(db operationdb.Database) (*block.Block, error) {
 
 // ToBlock创建genesis块并将genesis规范的状态写入给定数据库（如果为nil，则丢弃）。
 func (g *Genesis) ToBlock(db operationdb.Database) *block.Block {
-	//if db == nil {
-	//	db = rawdb.NewMemoryDatabase()
-	//}
-	//root, err := g.Alloc.flush(db)
-	//if err != nil {
-	//	panic(err)
-	//}
+	if db == nil {
+		db = memorydb.NewMemoryDatabase()
+	}
+	root, err := g.Alloc.flush(db)
+	if err != nil {
+		panic(err)
+	}
 	head := &block.Header{
 		Number:     new(big.Int).SetUint64(g.Number),
 		Nonce:      block.EncodeNonce(g.Nonce),
@@ -79,7 +84,7 @@ func (g *Genesis) ToBlock(db operationdb.Database) *block.Block {
 		Difficulty: g.Difficulty,
 		MixDigest:  g.Mixhash,
 		Coinbase:   g.Coinbase,
-		//Root:       root,
+		Root:       root,
 	}
 	if g.GasLimit == 0 {
 		head.GasLimit = entity.GenesisGasLimit
@@ -87,20 +92,67 @@ func (g *Genesis) ToBlock(db operationdb.Database) *block.Block {
 	if g.Difficulty == nil && g.Mixhash == (entity.Hash{}) {
 		head.Difficulty = entity.GenesisDifficulty
 	}
-	//if g.Config != nil && g.Config.IsLondon(operationUtils.Big0) {
-	//	if g.BaseFee != nil {
-	//		head.BaseFee = g.BaseFee
-	//	} else {
-	//		head.BaseFee = new(big.Int).SetUint64(params.InitialBaseFee)
-	//	}
-	//}
+	if g.Config != nil && g.Config.IsLondon(operationUtils.Big0) {
+		if g.BaseFee != nil {
+			head.BaseFee = g.BaseFee
+		} else {
+			head.BaseFee = new(big.Int).SetUint64(entity.InitialBaseFee)
+		}
+	}
 	return block.NewBlock(head, nil, nil)
+}
+
+//GenesisAccount是处于genesis区块状态的帐户。
+type GenesisAccount struct {
+	Code       []byte                      `json:"code,omitempty"`
+	Storage    map[entity.Hash]entity.Hash `json:"storage,omitempty"`
+	Balance    *big.Int                    `json:"balance" gencodec:"required"`
+	Nonce      uint64                      `json:"nonce,omitempty"`
+	PrivateKey []byte                      `json:"secretKey,omitempty"` // 用于测试
+}
+
+// GenesisAlloc指定作为genesis块一部分的初始状态。
+type GenesisAlloc map[entity.Address]GenesisAccount
+
+// flush将分配的genesis帐户添加到新的statedb中，并将状态更改提交到给定的数据库处理程序中。
+func (ga *GenesisAlloc) flush(db operationdb.Database) (entity.Hash, error) {
+	operationdb, err := operationdb.NewOperationDb(entity.Hash{}, operationdb.NewDatabase(db))
+	if err != nil {
+		return entity.Hash{}, err
+	}
+	for addr, account := range *ga {
+		operationdb.AddBalance(addr, account.Balance)
+		operationdb.SetCode(addr, account.Code)
+		operationdb.SetNonce(addr, account.Nonce)
+		for key, value := range account.Storage {
+			operationdb.SetState(addr, key, value)
+		}
+	}
+	root, err := operationdb.Commit(false)
+	if err != nil {
+		return entity.Hash{}, err
+	}
+	err = operationdb.Database().TrieDB().Commit(root, true, nil)
+	if err != nil {
+		return entity.Hash{}, err
+	}
+	return root, nil
+}
+
+//write将json封送的genesis状态写入数据库，并将给定的块哈希作为唯一标识符。
+func (ga *GenesisAlloc) write(db operationdb.KeyValueWriter, hash entity.Hash) error {
+	blob, err := json.Marshal(ga)
+	if err != nil {
+		return err
+	}
+	operationdb.WriteGenesisState(db, hash, blob)
+	return nil
 }
 
 // DefaultRopstenGenesisBlock返回Ropsten network genesis块。
 func DefaultRopstenGenesisBlock() *Genesis {
 	return &Genesis{
-		Config:     &ChainConfig{ChainID: big.NewInt(3)},
+		Config:     &entity.ChainConfig{ChainID: big.NewInt(3)},
 		Nonce:      66,
 		ExtraData:  utils.Hex2Bytes("0x3535353535353535353535353535353535353535353535353535353535353535"),
 		GasLimit:   16777216,
@@ -113,12 +165,12 @@ func DefaultRopstenGenesisBlock() *Genesis {
 func DefaultGenesisBlock() *Genesis {
 	id := big.NewInt(666)
 	return &Genesis{
-		Config:     &ChainConfig{ChainID: id},
+		Config:     &entity.ChainConfig{ChainID: id},
 		Nonce:      66,
 		ExtraData:  utils.Hex2Bytes("0x11bbe8db4e347b4e8c937c1c8370e4b5ed33adb3db69cbdb7a38e1e50b1b82fa"),
 		GasLimit:   50000,
 		Difficulty: big.NewInt(17179869184),
-		//Alloc:      decodePrealloc(mainnetAllocData),
+		Alloc:      decodePrealloc(mainnetAllocData),
 	}
 }
 
@@ -149,7 +201,7 @@ func MakeGenesis() *Genesis {
 	return genesis
 }
 
-func SetupGenesisBlockWithOverride(db operationdb.Database, genesis *Genesis, overrideArrowGlacier, overrideTerminalTotalDifficulty *big.Int) (*ChainConfig, entity.Hash, error) {
+func SetupGenesisBlockWithOverride(db operationdb.Database, genesis *Genesis, overrideArrowGlacier, overrideTerminalTotalDifficulty *big.Int) (*entity.ChainConfig, entity.Hash, error) {
 	//if genesis != nil && genesis.Config == nil {
 	//	return params.AllEthashProtocolChanges, entity.Hash{}, errGenesisNoConfig
 	//}
@@ -231,7 +283,19 @@ func SetupGenesisBlockWithOverride(db operationdb.Database, genesis *Genesis, ov
 	//	return newcfg, stored, compatErr
 	//}
 	//rawdb.WriteChainConfig(db, stored, newcfg)
-	return &ChainConfig{
+	return &entity.ChainConfig{
 		ChainID: big.NewInt(666),
 	}, stored, nil
+}
+
+func decodePrealloc(data string) GenesisAlloc {
+	var p []struct{ Addr, Balance *big.Int }
+	if err := rlp.NewStream(strings.NewReader(data), 0).Decode(&p); err != nil {
+		panic(err)
+	}
+	ga := make(GenesisAlloc, len(p))
+	for _, account := range p {
+		ga[entity.BigToAddress(account.Addr)] = GenesisAccount{Balance: account.Balance}
+	}
+	return ga
 }

@@ -5,6 +5,7 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus/utils"
 	"golang.org/x/crypto/sha3"
+	"math/big"
 )
 
 //定义hash和地址长度byte
@@ -48,6 +49,9 @@ func (a *Address) SetBytes(b []byte) {
 	}
 	copy(a[AddressLength-len(b):], b)
 }
+
+// BigToAddress返回字节值为b的地址。如果b大于len（h），则从左侧裁剪b。
+func BigToAddress(b *big.Int) Address { return BytesToAddress(b.Bytes()) }
 
 //HexToAddress返回字节值为s的地址。如果s大于len（h），则s将从左侧裁剪。
 func HexToAddress(s string) Address { return BytesToAddress(operationutils.FromHex(s)) }

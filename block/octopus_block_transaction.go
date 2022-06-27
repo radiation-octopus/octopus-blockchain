@@ -390,6 +390,12 @@ func (t *TransactionsByPriceAndNonce) Shift() {
 	heap.Pop(&t.heads)
 }
 
+// Pop删除最佳交易，*而不是*将其替换为同一帐户中的下一个交易。
+//当交易无法执行时，应使用此选项，因此应从同一帐户中丢弃所有后续交易。
+func (t *TransactionsByPriceAndNonce) Pop() {
+	heap.Pop(&t.heads)
+}
+
 /*
 TxWithMinerFee用其天然气价格或有效的miner Gasticap来包装交易
 */

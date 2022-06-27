@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb"
+	"github.com/radiation-octopus/octopus-blockchain/terr"
 	"math"
 	"math/big"
 
@@ -50,8 +52,25 @@ type StateTransition struct {
 	initialGas uint64
 	value      *big.Int
 	data       []byte
-	state      vm.StateDB
+	state      *operationdb.OperationDB
 	ovm        *vm.OVM
+}
+
+// 消息表示发送到合同的消息。
+type Message interface {
+	From() entity.Address
+	To() *entity.Address
+
+	GasPrice() *big.Int
+	GasFeeCap() *big.Int
+	GasTipCap() *big.Int
+	Gas() uint64
+	Value() *big.Int
+
+	Nonce() uint64
+	IsFake() bool
+	Data() []byte
+	//AccessList() AccessList
 }
 
 //执行结果返回体
@@ -62,23 +81,23 @@ type ExecutionResult struct {
 }
 
 //交易过渡结构创建
-func NewTransition(msg block.Message, gp *GasPool) *StateTransition {
+func NewTransition(ovm *vm.OVM, msg block.Message, gp *GasPool) *StateTransition {
 	return &StateTransition{
-		gp: gp,
-		//evm:       evm,
+		gp:        gp,
+		ovm:       ovm,
 		msg:       msg,
 		gasPrice:  msg.GasPrice(),
 		gasFeeCap: msg.GasFeeCap(),
 		gasTipCap: msg.GasTipCap(),
 		value:     msg.Value(),
 		data:      msg.Data(),
-		//state:     evm.StateDB,
+		state:     ovm.Operationdb,
 	}
 }
 
 //请求虚拟机处理，返回gas费用，账单
-func ApplyMessage(msg block.Message, gp *GasPool) (*ExecutionResult, error) {
-	return NewTransition(msg, gp).TransitionDb()
+func ApplyMessage(ovm *vm.OVM, msg block.Message, gp *GasPool) (*ExecutionResult, error) {
+	return NewTransition(ovm, msg, gp).TransitionDb()
 }
 
 //当前核心消息处理并返回结果
@@ -96,7 +115,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	var (
 		msg    = st.msg
 		sender = vm.AccountRef(msg.From())
-		//rules            = st.evm.ChainConfig().Rules(st.evm.Context.BlockNumber, st.evm.Context.Random != nil)
+		//rules            = st.ovm.ChainConfig().Rules(st.evm.Context.BlockNumber, st.evm.Context.Random != nil)
 		contractCreation = msg.To() == nil
 	)
 
@@ -115,12 +134,12 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	}
 	st.gas -= gas
 	// Check clause 6
-	//if msg.Value().Sign() > 0 && !st.evm.Context.CanTransfer(st.state, msg.From(), msg.Value()) {
-	//	return nil, fmt.Errorf("%w: address %v", ErrInsufficientFundsForTransfer, msg.From().Hex())
-	//}
+	if msg.Value().Sign() > 0 && !st.ovm.Context.CanTransfer(st.state, msg.From(), msg.Value()) {
+		return nil, fmt.Errorf("%w: address %v", terr.ErrInsufficientFundsForTransfer, msg.From().Hex())
+	}
 	var (
 		ret   []byte
-		vmerr error // vm errors do not effect consensus and are therefore not assigned to terr
+		vmerr error // vm错误不会影响共识，因此不会分配给terr
 	)
 
 	if contractCreation { //创建合约

@@ -2,7 +2,6 @@ package memorydb
 
 import (
 	"errors"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus/utils"
 	"sync"
@@ -25,19 +24,30 @@ type Database struct {
 	lock sync.RWMutex
 }
 
-func (db *Database) IsHas(mark string, key string) (bool, error) {
+//IsHas检索键值存储中是否存在键。
+func (db *Database) IsHas(key []byte) (bool, error) {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
 	if db.db == nil {
 		return false, errMemorydbClosed
 	}
-	_, ok := db.db[getKeyStr(mark, key)]
+	_, ok := db.db[string(key)]
 	return ok, nil
 }
 
-func (d *Database) Query(mark string, key string) *block.Header {
-	panic("implement me")
+//Get检索给定的键（如果它存在于键值存储中）。
+func (db *Database) Get(key []byte) ([]byte, error) {
+	db.lock.RLock()
+	defer db.lock.RUnlock()
+
+	if db.db == nil {
+		return nil, errMemorydbClosed
+	}
+	if entry, ok := db.db[string(key)]; ok {
+		return utils.CopyBytes(entry), nil
+	}
+	return nil, errMemorydbNotFound
 }
 
 func (db *Database) Put(mark string, key string, value []byte) error {

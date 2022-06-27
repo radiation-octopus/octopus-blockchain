@@ -14,7 +14,7 @@ import (
 
 //处理器结构体
 type BlockProcessor struct {
-	//config *params.ChainConfig // 链配置
+	//config *entity.ChainConfig // 链配置
 	bc     *BlockChain      // 标准链
 	engine consensus.Engine // 共识引擎
 }
@@ -66,8 +66,12 @@ func (p *BlockProcessor) Process(b *block.Block, operationdb *operationdb.Operat
 //处理事务
 func applyTransaction(msg block.Message, gp *transition.GasPool, operationdb *operationdb.OperationDB, blockNumber *big.Int, blockHash entity.Hash, tx *block.Transaction, usedGas *uint64, ovm *vm.OVM) (*block.Receipt, error) {
 
+	// 创建要在EVM环境中使用的新配置。
+	txContext := vm.NewEVMTxContext(msg)
+	ovm.Reset(txContext, operationdb)
+
 	//将事务应用于当前状态（包含在env中）。
-	result, err := transition.ApplyMessage(msg, gp)
+	result, err := transition.ApplyMessage(ovm, msg, gp)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +92,7 @@ func ApplyTransaction(bc vm.ChainContext, author *entity.Address, gp *transition
 	if err != nil {
 		return nil, err
 	}
-	// Create a new context to be used in the EVM environment
+	// 创建要在EVM环境中使用的新配置
 	blockContext := vm.NewOVMBlockContext(header, bc, author)
 	vmenv := vm.NewOVM(blockContext, vm.TxContext{}, statedb, cfg)
 	return applyTransaction(msg, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv)

@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"github.com/edsrzf/mmap-go"
 	"github.com/hashicorp/golang-lru/simplelru"
+	"github.com/radiation-octopus/octopus-blockchain/consensus"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/operationutils"
+	"github.com/radiation-octopus/octopus/director"
 	"github.com/radiation-octopus/octopus/log"
 	"math/big"
 	"math/rand"
@@ -337,7 +341,7 @@ func (d *dataset) generate(dir string, limit int, lock bool, test bool) {
 			d.dataset = make([]uint32, dsize/4)
 			generateDataset(d.dataset, d.epoch, cache)
 		}
-		// Iterate over all previous instances and delete old ones
+		// 迭代所有以前的实例并删除旧实例
 		for ep := int(d.epoch) - limit; ep >= 0; ep-- {
 			seed := seedHash(uint64(ep)*epochLength + 1)
 			path := filepath.Join(dir, fmt.Sprintf("full-R%d-%x%s", algorithmRevision, seed[:8], endian))
@@ -383,7 +387,7 @@ type Config struct {
 
 // Octell是一个基于实现Octell算法的工作证明的共识引擎。
 type Octell struct {
-	config Config
+	Config *Config `autoInjectLang:"octell.Config"` //启动项配置
 
 	caches   *lru // 内存缓存，以避免频繁重新生成
 	datasets *lru // 内存中的数据集，以避免过于频繁地重新生成
@@ -404,8 +408,40 @@ type Octell struct {
 	closeOnce sync.Once  // 确保出口通道不会关闭两次。
 }
 
+func (o *Octell) octellStart(chainConfig *entity.ChainConfig) {
+	noverify := director.ReadCfg("octopus", "miner", "binding", "config", "noverify").(bool)
+	notify := director.ReadCfg("octopus", "miner", "binding", "config", "notify")
+	// 如果需要权限证明，请进行设置
+	var engine consensus.Engine
+	if chainConfig.Engine == "Clique" { //POA
+		//engine = clique.New(entity.chainConfig.Clique, db)
+	} else { //POW
+		switch o.Config.PowMode {
+		case ModeFake:
+			log.Warn("Octell used in fake mode")
+		case ModeTest:
+			log.Warn("Octell used in test mode")
+		case ModeShared:
+			log.Warn("Octell used in shared mode")
+		}
+		engine = New(o, &Config{
+			PowMode: o.Config.PowMode,
+			//CacheDir:         stack.ResolvePath(o.config.CacheDir),
+			CachesInMem:      o.Config.CachesInMem,
+			CachesOnDisk:     o.Config.CachesOnDisk,
+			CachesLockMmap:   o.Config.CachesLockMmap,
+			DatasetDir:       o.Config.DatasetDir,
+			DatasetsInMem:    o.Config.DatasetsInMem,
+			DatasetsOnDisk:   o.Config.DatasetsOnDisk,
+			DatasetsLockMmap: o.Config.DatasetsLockMmap,
+			NotifyFull:       o.Config.NotifyFull,
+		}, operationutils.ArrayByInter(notify), noverify)
+		engine.(*Octell).SetThreads(-1) // 禁用CPU工作
+	}
+}
+
 // New创建一个全尺寸的octell PoW方案，并启动用于远程挖掘的后台线程，还可以选择通知一批远程服务新的工作包。
-func New(config Config, notify []string, noverify bool) *Octell {
+func New(o *Octell, config *Config, notify []string, noverify bool) *Octell {
 	//if config.Log == nil {
 	//	config.Log = log.Root()
 	//}
@@ -419,18 +455,22 @@ func New(config Config, notify []string, noverify bool) *Octell {
 	if config.DatasetDir != "" && config.DatasetsOnDisk > 0 {
 		log.Info("Disk storage enabled for octell DAGs", "dir", config.DatasetDir, "count", config.DatasetsOnDisk)
 	}
-	octell := &Octell{
-		config:   config,
-		caches:   newlru("cache", config.CachesInMem, newCache),
-		datasets: newlru("dataset", config.DatasetsInMem, newDataset),
-		update:   make(chan struct{}),
-		//hashrate: metrics.NewMeterForced(),
-	}
+	//octell := &Octell{
+	//	Config:   config,
+	//	caches:   newlru("cache", config.CachesInMem, newCache),
+	//	datasets: newlru("dataset", config.DatasetsInMem, newDataset),
+	//	update:   make(chan struct{}),
+	//	//hashrate: metrics.NewMeterForced(),
+	//}
+	o.Config = config
+	o.caches = newlru("cache", config.CachesInMem, newCache)
+	o.datasets = newlru("dataset", config.DatasetsInMem, newDataset)
+	o.update = make(chan struct{})
 	if config.PowMode == ModeShared {
-		octell.shared = sharedOctell
+		o.shared = sharedOctell
 	}
-	octell.remote = startRemoteSealer(octell, notify, noverify)
-	return octell
+	o.remote = startRemoteSealer(o, notify, noverify)
+	return o
 }
 
 //cache尝试检索指定块号的验证缓存，方法是首先检查内存中的缓存列表，然后检查存储在磁盘上的缓存，如果找不到缓存，最后生成一个。
@@ -440,12 +480,12 @@ func (octell *Octell) cache(block uint64) *cache {
 	current := currentI.(*cache)
 
 	// 等待生成完成。
-	current.generate(octell.config.CacheDir, octell.config.CachesOnDisk, octell.config.CachesLockMmap, octell.config.PowMode == ModeTest)
+	current.generate(octell.Config.CacheDir, octell.Config.CachesOnDisk, octell.Config.CachesLockMmap, octell.Config.PowMode == ModeTest)
 
 	// 如果我们需要一个新的未来缓存，现在是重新生成它的好时机。
 	if futureI != nil {
 		future := futureI.(*cache)
-		go future.generate(octell.config.CacheDir, octell.config.CachesOnDisk, octell.config.CachesLockMmap, octell.config.PowMode == ModeTest)
+		go future.generate(octell.Config.CacheDir, octell.Config.CachesOnDisk, octell.Config.CachesLockMmap, octell.Config.PowMode == ModeTest)
 	}
 	return current
 }
@@ -453,4 +493,24 @@ func (octell *Octell) cache(block uint64) *cache {
 // SeedHash是用于生成验证缓存和挖掘数据集的种子。
 func SeedHash(block uint64) []byte {
 	return seedHash(block)
+}
+
+// SetThreads更新当前启用的挖掘线程数。
+//调用此方法不会开始挖掘，只会设置线程数。
+//如果指定为零，矿工将使用机器的所有芯。允许将线程数设置为零以下，并将导致矿工闲置，而不进行任何工作。
+func (octell *Octell) SetThreads(threads int) {
+	octell.lock.Lock()
+	defer octell.lock.Unlock()
+
+	// 如果我们运行的是共享PoW，请将线程数设置为该PoW
+	if octell.shared != nil {
+		octell.shared.SetThreads(threads)
+		return
+	}
+	// 更新螺纹并敲打任何运行密封件，以拉入任何更改
+	octell.threads = threads
+	select {
+	case octell.update <- struct{}{}:
+	default:
+	}
 }

@@ -7,7 +7,7 @@ import (
 )
 
 type BlockValidator struct {
-	//config *params.chainConfig 	//链配置
+	//config *entity.chainConfig 	//链配置
 	bc     *BlockChain      //标准连
 	engine consensus.Engine //共识引擎
 }

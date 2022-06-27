@@ -21,7 +21,7 @@ const (
 )
 
 type HeaderChain struct {
-	//config        *params.ChainConfig
+	//config        *entity.ChainConfig
 	chainDb       operationdb.OperationDB
 	genesisHeader *block.Header //创世区块的当前头部
 

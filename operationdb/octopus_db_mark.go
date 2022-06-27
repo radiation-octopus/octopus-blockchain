@@ -9,4 +9,7 @@ var (
 	headHeaderMark = "0105" //当前规范标头的哈希
 	txMark         = "0106" //交易编号
 	headBlockMark  = "0107" //当前规范区块的哈希
+	CodePrefix     = "0108" //code前缀
+
+	genesisPrefix = "octopus-genesis-" // db的genesis状态前缀
 )

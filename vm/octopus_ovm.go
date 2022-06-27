@@ -2,6 +2,7 @@ package vm
 
 import (
 	"errors"
+	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
@@ -31,9 +32,9 @@ type BlockContext struct {
 
 type (
 	// 是否有足够的余额
-	CanTransferFunc func(StateDB, entity.Address, *big.Int) bool
+	CanTransferFunc func(*operationdb.OperationDB, entity.Address, *big.Int) bool
 	// 交易执行函数
-	TransferFunc func(StateDB, entity.Address, entity.Address, *big.Int)
+	TransferFunc func(*operationdb.OperationDB, entity.Address, entity.Address, *big.Int)
 	// 返回第几块的hash
 	GetHashFunc func(uint64) entity.Hash
 )
@@ -49,12 +50,12 @@ type OVM struct {
 	Context BlockContext
 	TxContext
 	// 操作数据库访问配置
-	operationdb operationdb.OperationDB
+	Operationdb *operationdb.OperationDB
 	// 当前调用堆栈深度
 	depth int
 
 	//链信息
-	//chainConfig *params.ChainConfig
+	//chainConfig *entity.ChainConfig
 	// 链规则
 	//chainRules params.Rules
 	// 初始化虚拟机配置选项
@@ -127,11 +128,18 @@ func NewOVM(blockCtx BlockContext, txCtx TxContext, operation *operationdb.Opera
 	evm := &OVM{
 		Context:     blockCtx,
 		TxContext:   txCtx,
-		operationdb: *operation,
+		Operationdb: operation,
 		Config:      config,
 	}
 	evm.interpreter = NewOVMInterpreter(evm, config)
 	return evm
+}
+
+// Reset resets the EVM with a new transaction context.Reset
+// This is not threadsafe and should only be done very cautiously.
+func (ovm *OVM) Reset(txCtx TxContext, operationdb *operationdb.OperationDB) {
+	ovm.TxContext = txCtx
+	ovm.Operationdb = operationdb
 }
 
 func NewOVMBlockContext(header *block.Header, chain ChainContext, author *entity.Address) BlockContext {
@@ -167,27 +175,37 @@ func NewOVMBlockContext(header *block.Header, chain ChainContext, author *entity
 	}
 }
 
+// NewEVMTxContext为单个事务创建新的事务配置。
+func NewEVMTxContext(msg block.Message) TxContext {
+	return TxContext{
+		Origin:   msg.From(),
+		GasPrice: new(big.Int).Set(msg.GasPrice()),
+	}
+}
+
 func (ovm *OVM) Call(caller ContractRef, addr entity.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	//深度限制
 	if ovm.depth > int(entity.CallCreateDepth) {
 		return nil, gas, errors.New("超过最大呼叫深度")
 	}
-	ovm.Context.Transfer(&ovm.operationdb, caller.Address(), addr, value)
+	fmt.Println("from:", caller.Address().String())
+	fmt.Println("to:", addr.String())
+	ovm.Context.Transfer(ovm.Operationdb, caller.Address(), addr, value)
+	ovm.Context.CanTransfer(ovm.Operationdb, addr, big.NewInt(20))
 
 	p, isPrecompile := ovm.precompile(addr)
 	if isPrecompile {
 		ret, gas, err = RunPrecompiledContract(p, input, gas)
 	} else {
 		// 初始化新合同并设置EVM要使用的代码
-		code := ovm.operationdb.GetCode(addr)
+		code := ovm.Operationdb.GetCode(addr)
 		if len(code) == 0 {
 			ret, err = nil, nil // gas不变
 		} else {
 			addrCopy := addr
-			// If the account has no code, we can abort here
-			// The depth-check is already done, and precompiles handled above
+			// 如果帐户没有代码，我们可以在这里中止深度检查，并在上面处理预编译
 			contract := NewContract(caller, AccountRef(addrCopy), value, gas)
-			contract.SetCallCode(&addrCopy, ovm.operationdb.GetCodeHash(addrCopy), code)
+			contract.SetCallCode(&addrCopy, ovm.Operationdb.GetCodeHash(addrCopy), code)
 			ret, err = ovm.interpreter.Run(contract, input, false)
 			gas = contract.Gas
 		}
@@ -225,12 +243,13 @@ func GetHashFn(ref *block.Header, chain ChainContext) func(n uint64) entity.Hash
 	}
 }
 
-func CanTransfer(db StateDB, addr entity.Address, amount *big.Int) bool {
+func CanTransfer(db *operationdb.OperationDB, addr entity.Address, amount *big.Int) bool {
+	fmt.Println("ovmdb:", db.GetBalance(addr))
 	return db.GetBalance(addr).Cmp(amount) >= 0
 }
 
-// Transfer subtracts amount from sender and adds amount to recipient using the given Db
-func Transfer(db StateDB, sender, recipient entity.Address, amount *big.Int) {
+// Transfer使用给定的Db从发送方减去金额，然后将金额添加到接收方
+func Transfer(db *operationdb.OperationDB, sender, recipient entity.Address, amount *big.Int) {
 	db.SubBalance(sender, amount)
 	db.AddBalance(recipient, amount)
 }

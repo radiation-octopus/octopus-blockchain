@@ -2,6 +2,7 @@ package operationdb
 
 import (
 	"errors"
+	"github.com/VictoriaMetrics/fastcache"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
@@ -75,7 +76,7 @@ func ReadHeadHeaderHash(dbdb KeyValueReader) entity.Hash {
 }
 
 // HasBody验证是否存在与哈希对应的块体。
-func HasBody(db Reader, hash entity.Hash, number uint64) bool {
+func HasBody(dbv Reader, hash entity.Hash, number uint64) bool {
 	//if isCanon(db, number, hash) {
 	//	return true
 	//}
@@ -163,6 +164,38 @@ func WriteHeadBlockHash(hash entity.Hash) {
 	}
 }
 
+// WriteCode写入提供的合同代码数据库。
+func WriteCode(dbd KeyValueWriter, hash entity.Hash, code []byte) {
+	if err := db.Insert(CodePrefix, hash.Hex(), code); err != nil {
+		log.Info("Failed to store contract code", "err", err)
+	}
+}
+
+//WritePreimages将提供的前映像集写入数据库。
+//func WritePreimages(db KeyValueWriter, preimages map[entity.Hash][]byte) {
+//	for hash, preimage := range preimages {
+//		if err := db.Put(preimageKey(hash), preimage); err != nil {
+//			log.Info("Failed to store trie preimage", "err", err)
+//		}
+//	}
+//	//preimageCounter.Inc(int64(len(preimages)))
+//	//preimageHitCounter.Inc(int64(len(preimages)))
+//}
+
+// WriteTrieNode写入提供的trie节点数据库。
+func WriteTrieNode(dbd KeyValueWriter, hash entity.Hash, node []byte) {
+	if err := db.Insert("", hash.Hex(), node); err != nil {
+		log.Info("Failed to store trie node", "err", err)
+	}
+}
+
+// WriteGenesisState将genesis状态写入磁盘。
+func WriteGenesisState(dbd KeyValueWriter, hash entity.Hash, data []byte) {
+	if err := db.Insert(genesisPrefix, hash.Hex(), data); err != nil {
+		log.Info("Failed to store genesis state", "err", err)
+	}
+}
+
 // NewDatabase为状态创建备份存储。返回的数据库可以安全地并发使用，但不会在内存中保留任何最近的trie节点。
 //要在内存中保留一些历史状态，请使用NewDatabaseWithConfig构造函数。
 func NewDatabase(db Database) DatabaseI {
@@ -176,6 +209,6 @@ func NewDatabaseWithConfig(db Database, config *Config) DatabaseI {
 	return &cachingDB{
 		db:            trieNewDatabaseWithConfig(db, config),
 		codeSizeCache: csc,
-		//codeCache:     fastcache.New(codeCacheSize),
+		codeCache:     fastcache.New(codeCacheSize),
 	}
 }

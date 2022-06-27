@@ -79,7 +79,7 @@ func (bc *BlockChain) CurrentBlock() *block.Block {
 
 //StateAt基于特定时间点返回新的可变状态。
 func (bc *BlockChain) StateAt(root entity.Hash) (*operationdb.OperationDB, error) {
-	return operationdb.NewOperationDb(root, bc.stateCache)
+	return operationdb.NewOperationDb(root, bc.operationCache)
 }
 
 // GetBlocksFromHash返回与哈希对应的块，最多返回n-1个祖先。
@@ -101,5 +101,19 @@ func (bc *BlockChain) GetBlocksFromHash(hash entity.Hash, n int) (blocks []*bloc
 	return
 }
 
+// GetBlockByNumber按编号从数据库中检索块，如果找到，则缓存它（与其哈希关联）。
+func (bc *BlockChain) GetBlockByNumber(number uint64) *block.Block {
+	hash := operationdb.ReadCanonicalHash(number)
+	if hash == (entity.Hash{}) {
+		return nil
+	}
+	return bc.GetBlock(hash, number)
+}
+
+//Processor返回当前处理器。
+func (bc *BlockChain) Processor() Processor {
+	return bc.processor
+}
+
 // Config检索链的fork配置。
-func (bc *BlockChain) Config() *ChainConfig { return bc.chainConfig }
+func (bc *BlockChain) Config() *entity.ChainConfig { return bc.chainConfig }

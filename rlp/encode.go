@@ -9,6 +9,13 @@ import (
 	"reflect"
 )
 
+var (
+	// 通用编码值。
+	//这些在实现EncodeRLP时很有用。
+	EmptyString = []byte{0x80}
+	EmptyList   = []byte{0xC0}
+)
+
 var ErrNegativeBigInt = errors.New("rlp: cannot encode negative big.Int")
 
 type listhead struct {
@@ -50,6 +57,17 @@ func Encode(w io.Writer, val interface{}) error {
 		return err
 	}
 	return buf.writeTo(w)
+}
+
+// EncodeToBytes返回val的RLP编码。有关编码规则，请参阅包级文档。
+func EncodeToBytes(val interface{}) ([]byte, error) {
+	buf := getEncBuffer()
+	defer encBufferPool.Put(buf)
+
+	if err := buf.encode(val); err != nil {
+		return nil, err
+	}
+	return buf.makeBytes(), nil
 }
 
 // puthead将列表或字符串头写入buf。buf的长度必须至少为9字节。

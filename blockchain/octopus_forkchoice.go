@@ -11,7 +11,7 @@ import (
 
 type ChainReader interface {
 	// 链配置
-	//Config() *params.ChainConfig
+	Config() *entity.ChainConfig
 
 	// 返回本地块总难度
 	GetTd(entity.Hash, uint64) *big.Int

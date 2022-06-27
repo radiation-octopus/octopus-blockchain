@@ -11,6 +11,7 @@ import (
 	"github.com/radiation-octopus/octopus/log"
 	"math/big"
 	"net/http"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -27,6 +28,64 @@ var (
 
 // 这是HTTP请求通知外部工作者的超时时间。
 const remoteSealerTimeout = 1 * time.Second
+
+//mine是一个实际的工作证明工作者，它从种子开始搜索一个nonce，从而获得正确的最终块难度。
+func (octell *Octell) mine(b *block.Block, id int, seed uint64, abort chan struct{}, found chan *block.Block) {
+	//从标题中提取一些数据
+	var (
+		header  = b.Header()
+		hash    = octell.SealHash(header).Bytes()
+		target  = new(big.Int).Div(two256, header.Difficulty)
+		number  = header.Number.Uint64()
+		dataset = octell.dataset(number, false)
+	)
+	// 开始生成随机nonce，直到我们中止或找到一个好的nonce
+	var (
+		attempts  = int64(0)
+		nonce     = seed
+		powBuffer = new(big.Int)
+	)
+	//logger := octell.Config.Log.New("miner", id)
+	log.Info("Started Octell search for new nonces", "seed", seed)
+search:
+	for {
+		select {
+		case <-abort:
+			// 工作已终止，更新统计信息并中止
+			log.Info("Octell nonce search aborted", "attempts", nonce-seed)
+			//octell.hashrate.Mark(attempts)
+			break search
+
+		default:
+			// 我们不必在每个nonce上更新哈希率，所以在2^X nonce之后更新
+			attempts++
+			if (attempts % (1 << 15)) == 0 {
+				//octell.hashrate.Mark(attempts)
+				attempts = 0
+			}
+			// 计算此nonce的PoW值
+			digest, result := hashimotoFull(dataset.dataset, hash, nonce)
+			if powBuffer.SetBytes(result).Cmp(target) <= 0 {
+				// 找到正确的nonce，使用它创建新的标头
+				header = block.CopyHeader(header)
+				header.Nonce = block.EncodeNonce(nonce)
+				header.MixDigest = entity.BytesToHash(digest)
+
+				// 密封并返回块（如果仍然需要）
+				select {
+				case found <- b.WithSeal(header):
+					log.Info("Octell nonce found and reported", "attempts", nonce-seed, "nonce", nonce)
+				case <-abort:
+					log.Info("Octell nonce found but discarded", "attempts", nonce-seed, "nonce", nonce)
+				}
+				break search
+			}
+			nonce++
+		}
+	}
+	// 在终结器中未映射数据集。确保数据集在密封期间保持活动状态，以便在读取时不会取消映射。
+	runtime.KeepAlive(dataset)
+}
 
 type remoteSealer struct {
 	works        map[entity.Hash]*block.Block
@@ -166,7 +225,7 @@ func (s *remoteSealer) notifyWork() {
 
 	// 对通知的JSON负载进行编码。设置NotifyFull时，这是完整的块头，否则它是一个JSON数组。
 	var blob []byte
-	if s.octell.config.NotifyFull {
+	if s.octell.Config.NotifyFull {
 		blob, _ = json.Marshal(s.currentBlock.Header())
 	} else {
 		blob, _ = json.Marshal(work)

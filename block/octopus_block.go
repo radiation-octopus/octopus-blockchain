@@ -11,7 +11,7 @@ import (
 
 var (
 	EmptyRootHash  = entity.BytesToHash(utils.Hex2Bytes("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"))
-	EmptyUncleHash = []*Header(nil)
+	EmptyUncleHash = crypto.RlpHash([]*Header(nil))
 )
 
 type BlockNonce [8]byte
@@ -77,7 +77,6 @@ type Block struct {
 func NewBlock(header *Header, txs []*Transaction, receipts []*Receipt) *Block {
 	b := &Block{header: CopyHeader(header), td: new(big.Int)}
 	var hasher crypto.TrieHasher
-	// TODO: panic if len(txs) != len(receipts)
 	if len(txs) == 0 {
 		b.header.TxHash = EmptyRootHash
 	} else {

@@ -26,6 +26,29 @@ func (buf *encBuffer) reset() {
 	buf.lheads = buf.lheads[:0]
 }
 
+// makeBytes创建编码器输出。
+func (w *encBuffer) makeBytes() []byte {
+	out := make([]byte, w.size())
+	w.copyTo(out)
+	return out
+}
+
+func (w *encBuffer) copyTo(dst []byte) {
+	strpos := 0
+	pos := 0
+	for _, head := range w.lheads {
+		//在标头之前写入字符串数据
+		n := copy(dst[pos:], w.str[strpos:head.offset])
+		pos += n
+		strpos += n
+		// 写入标题
+		enc := head.encode(dst[pos:])
+		pos += len(enc)
+	}
+	// 复制最后一个列表标题后的字符串数据
+	copy(dst[pos:], w.str[strpos:])
+}
+
 //写入实现io。Writer并将b直接附加到输出。
 func (buf *encBuffer) Write(b []byte) (int, error) {
 	buf.str = append(buf.str, b...)
@@ -173,6 +196,44 @@ type EncoderBuffer struct {
 	ownBuffer bool
 }
 
+// NewEncoderBuffer创建编码器缓冲区。
+func NewEncoderBuffer(dst io.Writer) EncoderBuffer {
+	var w EncoderBuffer
+	w.Reset(dst)
+	return w
+}
+
+// AppendToBytes将编码字节追加到dst。
+func (w *EncoderBuffer) AppendToBytes(dst []byte) []byte {
+	size := w.buf.size()
+	out := append(dst, make([]byte, size)...)
+	w.buf.copyTo(out[len(dst):])
+	return out
+}
+
+//重置将截断缓冲区并设置输出目标。
+func (w *EncoderBuffer) Reset(dst io.Writer) {
+	if w.buf != nil && !w.ownBuffer {
+		panic("can't Reset derived EncoderBuffer")
+	}
+
+	// 如果目标写入程序有*encBuffer，请使用它。请注意，这里w.ownBuffer为false。
+	if dst != nil {
+		if outer := encBufferFromWriter(dst); outer != nil {
+			*w = EncoderBuffer{outer, nil, false}
+			return
+		}
+	}
+
+	// 获取新的缓冲区。
+	if w.buf == nil {
+		w.buf = encBufferPool.Get().(*encBuffer)
+		w.ownBuffer = true
+	}
+	w.buf.reset()
+	w.dst = dst
+}
+
 //Flush将编码的RLP数据写入输出写入器。这只能调用一次。如果要在刷新后重新使用缓冲区，必须调用Reset。
 func (w *EncoderBuffer) Flush() error {
 	var err error
@@ -185,6 +246,11 @@ func (w *EncoderBuffer) Flush() error {
 	}
 	*w = EncoderBuffer{}
 	return err
+}
+
+//ToBytes返回编码的字节。
+func (w *EncoderBuffer) ToBytes() []byte {
+	return w.buf.makeBytes()
 }
 
 //写入将b直接附加到编码器输出。
@@ -203,4 +269,19 @@ func encBufferFromWriter(w io.Writer) *encBuffer {
 	default:
 		return nil
 	}
+}
+
+// WriteBytes将b编码为RLP字符串。
+func (w EncoderBuffer) WriteBytes(b []byte) {
+	w.buf.writeBytes(b)
+}
+
+// 列表启动列表。它返回一个内部索引。对内容进行编码后，使用此索引调用EndList以完成列表。
+func (w EncoderBuffer) List() int {
+	return w.buf.list()
+}
+
+//ListEnd完成给定的列表。
+func (w EncoderBuffer) ListEnd(index int) {
+	w.buf.listEnd(index)
 }

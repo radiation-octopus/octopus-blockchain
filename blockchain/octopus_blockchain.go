@@ -21,13 +21,29 @@ const (
 	maxFutureBlocks = 256
 )
 
+// CacheConfig包含驻留在区块链中的trie缓存/精简的配置值。
+type CacheConfig struct {
+	TrieCleanLimit      int           // 用于在内存中缓存trie节点的内存余量（MB）
+	TrieCleanJournal    string        // 用于保存干净缓存项的磁盘日志。
+	TrieCleanRejournal  time.Duration // 定期将干净缓存转储到磁盘的时间间隔
+	TrieCleanNoPrefetch bool          // 是否禁用后续块的启发式状态预取
+	TrieDirtyLimit      int           // 开始将脏trie节点刷新到磁盘的内存限制（MB）
+	TrieDirtyDisabled   bool          // 是否同时禁用trie写缓存和GC（存档节点）
+	TrieTimeLimit       time.Duration // 将内存中的电流刷新到磁盘的时间限制
+	SnapshotLimit       int           // 用于在内存中缓存快照项的内存余量（MB）
+	Preimages           bool          // 是否将trie密钥的前映像存储到磁盘
+
+	SnapshotWait bool // 等待启动时创建快照.
+}
+
 //blockchain结构体
 type BlockChain struct {
-	chainConfig *ChainConfig // 链和网络配置
+	chainConfig *entity.ChainConfig // 链和网络配置
+	cacheConfig *CacheConfig        // 精简的缓存配置
 
 	db operationdb.Database //数据库
 
-	TxLookupLimit uint64 `autoInjectCfg:octopus.blockchain.binding.genesis.header.txLookupLimit"` //一个区块容纳最大交易限制
+	TxLookupLimit uint64 //`autoInjectCfg:"octopus.blockchain.binding.genesis.header.txLookupLimit"` //一个区块容纳最大交易限制
 	hc            *HeaderChain
 	chainHeadFeed Feed
 	blockProcFeed Feed //区块过程注入事件
@@ -38,8 +54,7 @@ type BlockChain struct {
 	currentBlock atomic.Value // 当前区块
 	//currentFastBlock atomic.Value	//快速同步链的当前区块
 
-	operationCache operationdb.DatabaseI
-	stateCache     operationdb.DatabaseI // 要在导入之间重用的状态数据库（包含状态缓存）
+	operationCache operationdb.DatabaseI // 要在导入之间重用的状态数据库（包含状态缓存）
 	futureBlocks   *lru.Cache            //新区块缓存区
 	wg             sync.WaitGroup        //同步等待属性
 	quit           chan struct{}         //关闭属性
@@ -54,12 +69,8 @@ type BlockChain struct {
 	vmConfig vm.Config
 }
 
-type ChainConfig struct {
-	ChainID *big.Int `json:"chainId"` // chainId标识当前链并用于重播保护
-}
-
 //// IsLondon返回num是否等于或大于London fork块。
-//func (c *ChainConfig) IsLondon(num *big.Int) bool {
+//func (c *entity.ChainConfig) IsLondon(num *big.Int) bool {
 //	return isForked(c.LondonBlock, num)
 //}
 
@@ -113,16 +124,29 @@ func (it *insertIterator) previous() *block.Header {
 
 //链启动类，配置参数启动
 func (bc *BlockChain) start() {
+	//打开内存数据库
+	chainDb, err := OpenDatabaseWithFreezer()
+	bc.db = chainDb
 	//构造创世区块
 	genesis := DefaultGenesisBlock()
 	chainConfig, _, _ := SetupGenesisBlockWithOverride(bc.db, genesis, nil, nil)
-	//打开内存数据库
-	chainDb, err := OpenDatabaseWithFreezer()
+
 	if err != nil {
 		errors.New("chainDb start failed")
 	}
+	var cacheConfig = &CacheConfig{
+		//TrieCleanLimit:      config.TrieCleanCache,
+		////TrieCleanJournal:    stack.ResolvePath(config.TrieCleanCacheJournal),
+		//TrieCleanRejournal:  config.TrieCleanCacheRejournal,
+		//TrieCleanNoPrefetch: config.NoPrefetch,
+		//TrieDirtyLimit:      config.TrieDirtyCache,
+		//TrieDirtyDisabled:   config.NoPruning,
+		//TrieTimeLimit:       config.TrieTimeout,
+		//SnapshotLimit:       config.SnapshotCache,
+		//Preimages:           config.Preimages,
+	}
 	//初始化区块链
-	bc, erro := newBlockChain(bc, chainDb, chainConfig, nil, nil)
+	bc, erro := newBlockChain(bc, cacheConfig, chainConfig, nil, nil)
 	if erro != nil {
 		errors.New("blockchain start fail")
 	}
@@ -131,6 +155,10 @@ func (bc *BlockChain) start() {
 //链终止
 func (bc *BlockChain) close() {
 
+}
+
+func (bc *BlockChain) GetDB() operationdb.Database {
+	return bc.db
 }
 
 func (bc *BlockChain) getBlockChain() *BlockChain {
@@ -143,13 +171,13 @@ func (bc *BlockChain) GetVMConfig() *vm.Config {
 }
 
 //构建区块链结构体
-func newBlockChain(bc *BlockChain, db operationdb.Database, chainConfig *ChainConfig, engine consensus.Engine, shouldPreserve func(header *block.Header) bool) (*BlockChain, error) {
+func newBlockChain(bc *BlockChain, cacheConfig *CacheConfig, chainConfig *entity.ChainConfig, engine consensus.Engine, shouldPreserve func(header *block.Header) bool) (*BlockChain, error) {
 	futureBlocks, _ := lru.New(maxFutureBlocks)
-	bc.db = db
 	bc.quit = make(chan struct{})
 	bc.futureBlocks = futureBlocks
 	bc.engine = engine
 	bc.chainConfig = chainConfig
+	bc.cacheConfig = cacheConfig
 	//bc = &BlockChain{
 	//	db:   db,
 	//	quit: make(chan struct{}),
@@ -163,7 +191,7 @@ func newBlockChain(bc *BlockChain, db operationdb.Database, chainConfig *ChainCo
 	//	engine:       engine,
 	//}
 	//bc.forker = NewForkChoice(bc, shouldPreserve)
-	bc.stateCache = operationdb.NewDatabaseWithConfig(db, &operationdb.Config{
+	bc.operationCache = operationdb.NewDatabaseWithConfig(bc.db, &operationdb.Config{
 		//Cache:     cacheConfig.TrieCleanLimit,
 		//Journal:   cacheConfig.TrieCleanJournal,
 		//Preimages: cacheConfig.Preimages,
@@ -230,7 +258,7 @@ func (bc *BlockChain) loadLastState() error {
 	bc.currentBlock.Store(currentBlock)
 	//headBlockGauge.Update(int64(currentBlock.NumberU64()))
 
-	// Restore the last known head header
+	// 还原最后一个已知的标头
 	currentHeader := currentBlock.Header()
 	if head := operationdb.ReadHeadHeaderHash(bc.db); head != (entity.Hash{}) {
 		if header := bc.GetHeaderByHash(head); header != nil {
@@ -443,8 +471,7 @@ func newInsertIterator(chain Blocks, results <-chan error, validator Validator) 
 	}
 }
 
-// WriteBlockAndSetHead writes the given block and all associated state to the database,
-// and applies the block as the new chain head.
+// WriteBlockAndSetHead将给定块和所有关联状态写入数据库，并将该块作为新链头应用。
 func (bc *BlockChain) WriteBlockAndSetHead(block *block.Block, receipts []*block.Receipt, logs []*log.OctopusLog, state *operationdb.OperationDB, emitHeadEvent bool) (status WriteStatus, err error) {
 	//if !bc.chainmu.TryLock() {
 	//	return NonStatTy, errChainStopped
@@ -455,82 +482,79 @@ func (bc *BlockChain) WriteBlockAndSetHead(block *block.Block, receipts []*block
 }
 
 func (bc *BlockChain) writeBlockWithState(block *block.Block, receipts []*block.Receipt, logs []*log.OctopusLog, operation *operationdb.OperationDB) error {
-	// Calculate the total difficulty of the block
+	// 计算方块的总难度
 	ptd := bc.GetTd(block.ParentHash(), block.NumberU64()-1)
 	if ptd == nil {
 		return errors.New("unknown ancestor")
 	}
-	// Make sure no inconsistent state is leaked during insertion
+	// 确保插入期间没有不一致的状态泄漏
 	externTd := new(big.Int).Add(block.Difficulty(), ptd)
 
-	// Irrelevant of the canonical status, write the block itself to the database.
-	//
-	// Note all the components of block(td, hash->number map, header, body, receipts)
-	// should be written atomically. BlockBatch is used for containing all components.
-	//blockBatch := bc.db.NewBatch()
+	// 与规范状态无关，将块本身写入数据库。
+	// 注：块的所有组件（td、哈希->数字映射、标题、正文、收据）都应该以原子方式写入。BlockBatch用于包含所有组件。
+	blockBatch := bc.db.NewBatch()
 	operationdb.WriteTd(block.Hash(), block.NumberU64(), externTd)
 	operationdb.WriteBlock(block)
 	operationdb.WriteReceipts(block.Hash(), receipts)
-	//rawdb.WritePreimages(blockBatch, state.Preimages())
-	//if terr := blockBatch.Write(); terr != nil {
-	//	log.Crit("Failed to write block into disk", "terr", terr)
-	//}
-	// 将所有缓存状态更改提交到基础内存数据库中。
-	//root, terr := state.Commit(bc.chainConfig.IsEIP158(block.Number()))
-	//if terr != nil {
-	//	return terr
-	//}
-	//triedb := bc.stateCache.TrieDB()
+	//operationdb.WritePreimages(blockBatch, operation.Preimages())
+	if terr := blockBatch.Write(); terr != nil {
+		log.Info("Failed to write block into disk", "terr", terr)
+	}
+	//将所有缓存状态更改提交到基础内存数据库中。
+	root, terr := operation.Commit(bc.chainConfig.IsEIP158(block.Number()))
+	if terr != nil {
+		return terr
+	}
+	triedb := bc.operationCache.TrieDB()
 
-	// If we're running an archive node, always flush
+	return triedb.Commit(root, false, nil)
+	//如果正在运行存档节点，请始终刷新
 	//if bc.cacheConfig.TrieDirtyDisabled {
 	//	return triedb.Commit(root, false, nil)
 	//} else {
-	//	// Full but not archive node, do proper garbage collection
-	//	triedb.Reference(root, common.Hash{}) // metadata reference to keep trie alive
-	//	bc.triegc.Push(root, -int64(block.NumberU64()))
-	//
-	//	if current := block.NumberU64(); current > TriesInMemory {
-	//		// If we exceeded our memory allowance, flush matured singleton nodes to disk
-	//		var (
-	//			nodes, imgs = triedb.Size()
-	//			limit       = common.StorageSize(bc.cacheConfig.TrieDirtyLimit) * 1024 * 1024
-	//		)
-	//		if nodes > limit || imgs > 4*1024*1024 {
-	//			triedb.Cap(limit - ethdb.IdealBatchSize)
-	//		}
-	//		// Find the next state trie we need to commit
-	//		chosen := current - TriesInMemory
-	//
-	//		// If we exceeded out time allowance, flush an entire trie to disk
-	//		if bc.gcproc > bc.cacheConfig.TrieTimeLimit {
-	//			// If the header is missing (canonical chain behind), we're reorging a low
-	//			// diff sidechain. Suspend committing until this operation is completed.
-	//			header := bc.GetHeaderByNumber(chosen)
-	//			if header == nil {
-	//				log.Warn("Reorg in progress, trie commit postponed", "number", chosen)
-	//			} else {
-	//				// If we're exceeding limits but haven't reached a large enough memory gap,
-	//				// warn the user that the system is becoming unstable.
-	//				if chosen < lastWrite+TriesInMemory && bc.gcproc >= 2*bc.cacheConfig.TrieTimeLimit {
-	//					log.Info("State in memory for too long, committing", "time", bc.gcproc, "allowance", bc.cacheConfig.TrieTimeLimit, "optimum", float64(chosen-lastWrite)/TriesInMemory)
-	//				}
-	//				// Flush an entire trie and restart the counters
-	//				triedb.Commit(header.Root, true, nil)
-	//				lastWrite = chosen
-	//				bc.gcproc = 0
-	//			}
-	//		}
-	//		// Garbage collect anything below our required write retention
-	//		for !bc.triegc.Empty() {
-	//			root, number := bc.triegc.Pop()
-	//			if uint64(-number) > chosen {
-	//				bc.triegc.Push(root, number)
-	//				break
-	//			}
-	//			triedb.Dereference(root.(common.Hash))
-	//		}
-	//	}
+	//	// 已满但未存档节点，请执行正确的垃圾收集
+	//	triedb.Reference(root, entity.Hash{}) // 保持trie活动的元数据引用
+	//	//bc.triegc.Push(root, -int64(block.NumberU64()))
+	//	//
+	//	//if current := block.NumberU64(); current > TriesInMemory {
+	//	//	// 如果超出内存允许，则将成熟的单例节点刷新到磁盘
+	//	//	var (
+	//	//		nodes, imgs = triedb.Size()
+	//	//		limit       = utils.StorageSize(bc.cacheConfig.TrieDirtyLimit) * 1024 * 1024
+	//	//	)
+	//	//	if nodes > limit || imgs > 4*1024*1024 {
+	//	//		triedb.Cap(limit - ethdb.IdealBatchSize)
+	//	//	}
+	//	//	// 找到我们需要提交的下一个状态
+	//	//	chosen := current - TriesInMemory
+	//	//
+	//	//	// 如果超出了超时限制，则将整个trie刷新到磁盘
+	//	//	if bc.gcproc > bc.cacheConfig.TrieTimeLimit {
+	//	//		// 如果缺少标头（后面是规范链），我们将重新定位低差异侧链。暂停提交，直到此操作完成。
+	//	//		header := bc.GetHeaderByNumber(chosen)
+	//	//		if header == nil {
+	//	//			log.Warn("Reorg in progress, trie commit postponed", "number", chosen)
+	//	//		} else {
+	//	//			// 如果我们超出了限制，但还没有达到足够大的内存间隙，请警告用户系统正在变得不稳定。
+	//	//			if chosen < lastWrite+TriesInMemory && bc.gcproc >= 2*bc.cacheConfig.TrieTimeLimit {
+	//	//				log.Info("State in memory for too long, committing", "time", bc.gcproc, "allowance", bc.cacheConfig.TrieTimeLimit, "optimum", float64(chosen-lastWrite)/TriesInMemory)
+	//	//			}
+	//	//			// 刷新整个trie并重新启动计数器
+	//	//			triedb.Commit(header.Root, true, nil)
+	//	//			lastWrite = chosen
+	//	//			bc.gcproc = 0
+	//	//		}
+	//	//	}
+	//	//	// 垃圾收集低于我们要求的写保留率的任何内容
+	//	//	for !bc.triegc.Empty() {
+	//	//		root, number := bc.triegc.Pop()
+	//	//		if uint64(-number) > chosen {
+	//	//			bc.triegc.Push(root, number)
+	//	//			break
+	//	//		}
+	//	//		triedb.Dereference(root.(entity.Hash))
+	//	//	}
+	//	//}
 	//}
 	return nil
 }

@@ -18,7 +18,7 @@ var (
 	// testTxPoolConfig是一种事务池配置，在测试期间没有使用有状态磁盘副作用。
 	testTxPoolConfig TxPoolConfig
 
-	TestChainConfig = &ChainConfig{big.NewInt(1)}
+	TestChainConfig = &entity.ChainConfig{big.NewInt(1)}
 )
 
 func TestInvalidTransactions(t *testing.T) {
@@ -69,7 +69,7 @@ func setupTxPool() (*TxPool, *ecdsa.PrivateKey) {
 	return setupTxPoolWithConfig(TestChainConfig)
 }
 
-func setupTxPoolWithConfig(config *ChainConfig) (*TxPool, *ecdsa.PrivateKey) {
+func setupTxPoolWithConfig(config *entity.ChainConfig) (*TxPool, *ecdsa.PrivateKey) {
 	statedb, _ := operationdb.NewOperationDb(entity.Hash{}, operationdb.NewDatabase(memorydb.NewMemoryDatabase()))
 	blockcha := &testBlockChain{10000000, statedb, new(Feed)}
 

@@ -1,6 +1,8 @@
 package rlp
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -8,6 +10,7 @@ import (
 	"io"
 	"math/big"
 	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -36,6 +39,33 @@ var (
 //DecodeRLP方法应该从给定流中读取一个值。不禁止少读或多读，但这可能会令人困惑。
 type Decoder interface {
 	DecodeRLP(*Stream) error
+}
+
+// Decode解析来自r的RLP编码数据，并将结果存储在val指向的值中。Val必须是非nil指针。如果r没有实现ByteReader，Decode将自己进行缓冲。
+//请注意，Decode并没有为所有读卡器设置输入限制，并且可能容易受到巨大值大小导致的恐慌的影响。如果需要输入限制，请使用NewStream（r，limit）。解码（val）
+func Decode(r io.Reader, val interface{}) error {
+	stream := streamPool.Get().(*Stream)
+	defer streamPool.Put(stream)
+
+	stream.Reset(r, 0)
+	return stream.Decode(val)
+}
+
+// DecodeBytes将RLP数据从b解析为val。输入必须只包含一个值，并且不包含尾随数据。
+func DecodeBytes(b []byte, val interface{}) error {
+	r := bytes.NewReader(b)
+
+	stream := streamPool.Get().(*Stream)
+	defer streamPool.Put(stream)
+
+	stream.Reset(r, uint64(len(b)))
+	if err := stream.Decode(val); err != nil {
+		return err
+	}
+	if r.Len() > 0 {
+		return ErrMoreThanOneValue
+	}
+	return nil
 }
 
 type decodeError struct {
@@ -460,6 +490,16 @@ type Stream struct {
 	limited   bool     // 如果输入限制生效，则为true
 }
 
+// NewStream创建一个从r读取的新解码流。如果r实现ByteReader接口，则流不会引入任何缓冲。对于非顶级值，Stream为不符合封闭列表的值返回ErrElemTooLarge。
+//流支持可选的输入限制。如果设置了限制，将对照剩余输入长度检查任何toplevel值的大小。
+//遇到超过剩余输入长度的值的流操作将返回ErrValueTooLarge。可以通过为inputLimit传递非零值来设置限制。
+//如果r是字节。读取器或字符串。读取器，除非提供明确的限制，否则输入限制设置为r的基础数据的长度。
+func NewStream(r io.Reader, inputLimit uint64) *Stream {
+	s := new(Stream)
+	s.Reset(r, inputLimit)
+	return s
+}
+
 //Raw读取包含RLP类型信息的原始编码值。
 func (s *Stream) Raw() ([]byte, error) {
 	kind, size, err := s.Kind()
@@ -554,6 +594,70 @@ func (s *Stream) readKind() (kind Kind, size uint64, err error) {
 		}
 		return List, size, err
 	}
+}
+
+// Decode对一个值进行解码，并将结果存储在val所指的值中.
+func (s *Stream) Decode(val interface{}) error {
+	if val == nil {
+		return errDecodeIntoNil
+	}
+	rval := reflect.ValueOf(val)
+	rtyp := rval.Type()
+	if rtyp.Kind() != reflect.Ptr {
+		return errNoPointer
+	}
+	if rval.IsNil() {
+		return errDecodeIntoNil
+	}
+	decoder, err := cachedDecoder(rtyp.Elem())
+	if err != nil {
+		return err
+	}
+
+	err = decoder(s, rval.Elem())
+	if decErr, ok := err.(*decodeError); ok && len(decErr.ctx) > 0 {
+		// 将解码目标类型添加到错误中，以便配置具有更多含义。
+		decErr.ctx = append(decErr.ctx, fmt.Sprint("(", rtyp.Elem(), ")"))
+	}
+	return err
+}
+
+// Reset丢弃有关当前解码上下文的任何信息，并开始从r读取。此方法旨在促进在许多解码操作中重用预分配流。
+//若r也并没有实现ByterReader，则流将自己进行缓冲。
+func (s *Stream) Reset(r io.Reader, inputLimit uint64) {
+	if inputLimit > 0 {
+		s.remaining = inputLimit
+		s.limited = true
+	} else {
+		// Attempt to automatically discover
+		// the limit when reading from a byte slice.
+		switch br := r.(type) {
+		case *bytes.Reader:
+			s.remaining = uint64(br.Len())
+			s.limited = true
+		case *bytes.Buffer:
+			s.remaining = uint64(br.Len())
+			s.limited = true
+		case *strings.Reader:
+			s.remaining = uint64(br.Len())
+			s.limited = true
+		default:
+			s.limited = false
+		}
+	}
+	// 如果没有缓冲区，则使用缓冲区包装r。
+	bufr, ok := r.(ByteReader)
+	if !ok {
+		bufr = bufio.NewReader(r)
+	}
+	s.r = bufr
+	// 重置解码上下文。
+	s.stack = s.stack[:0]
+	s.size = 0
+	s.kind = -1
+	s.kinderr = nil
+	s.byteval = 0
+	s.uintbuf = [32]byte{}
 }
 
 func (s *Stream) readUint(size byte) (uint64, error) {

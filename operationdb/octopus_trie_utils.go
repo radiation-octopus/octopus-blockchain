@@ -11,6 +11,7 @@ package operationdb
 type tracer struct {
 	insert map[string]struct{}
 	delete map[string]struct{}
+	origin map[string][]byte
 }
 
 // copy返回深度复制的跟踪器实例。
@@ -22,6 +23,7 @@ func (t *tracer) copy() *tracer {
 	var (
 		insert = make(map[string]struct{})
 		delete = make(map[string]struct{})
+		origin = make(map[string][]byte)
 	)
 	for key := range t.insert {
 		insert[key] = struct{}{}
@@ -29,8 +31,50 @@ func (t *tracer) copy() *tracer {
 	for key := range t.delete {
 		delete[key] = struct{}{}
 	}
+	for key, val := range t.origin {
+		origin[key] = val
+	}
 	return &tracer{
 		insert: insert,
 		delete: delete,
+		origin: origin,
 	}
+}
+
+// 重置清除跟踪器跟踪的内容。
+func (t *tracer) reset() {
+	// 当前未使用跟踪程序，请稍后删除此检查。
+	if t == nil {
+		return
+	}
+	t.insert = make(map[string]struct{})
+	t.delete = make(map[string]struct{})
+	t.origin = make(map[string][]byte)
+}
+
+// onInsert跟踪新插入的trie节点。
+//如果它已经在删除集中（复活的节点），那么只需将其作为“未触及”从删除集中擦除即可。
+func (t *tracer) onInsert(key []byte) {
+	// 当前未使用跟踪程序，请稍后删除此检查。
+	if t == nil {
+		return
+	}
+	if _, present := t.delete[string(key)]; present {
+		delete(t.delete, string(key))
+		return
+	}
+	t.insert[string(key)] = struct{}{}
+}
+
+// onDelete跟踪新删除的trie节点。如果它已经在加法集中，那么只需将其从加法集中擦除，因为它未被触及。
+func (t *tracer) onDelete(key []byte) {
+	// 当前未使用跟踪程序，请稍后删除此检查。
+	if t == nil {
+		return
+	}
+	if _, present := t.insert[string(key)]; present {
+		delete(t.insert, string(key))
+		return
+	}
+	t.delete[string(key)] = struct{}{}
 }

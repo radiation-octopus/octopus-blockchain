@@ -68,7 +68,7 @@ func (s *TxConsole) signTransaction(args *block.TransactionArgs, passwd string) 
 	//	return nil, err
 	//}
 	//初始化交易默认值
-	no := operationutils.Uint64(1)
+	no := operationutils.Uint64(0)
 	args.Nonce = &no
 	gas := operationutils.Uint64(22000)
 	args.Gas = &gas
@@ -162,7 +162,8 @@ type AddBalance struct {
 func (a *AddBalance) AddBalanceCmd(inMap map[string]interface{}) interface{} {
 	oct := inMap["oct"].(string)
 	octI, _ := strconv.ParseInt(oct, 10, 64)
-	blockchain.SetNonce(a.Oct.TxPool(), entity.HexToAddress(utils.GetInToStr(inMap["from"])), 1)
+	//blockchain.SetNonce(a.Oct.TxPool(), entity.HexToAddress(utils.GetInToStr(inMap["from"])), 1)
+
 	blockchain.AddBalance(a.Oct.TxPool(), entity.HexToAddress(utils.GetInToStr(inMap["from"])), big.NewInt(octI))
 	log.Info(inMap["from"], "add:", oct)
 	return true

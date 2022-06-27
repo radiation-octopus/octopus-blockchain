@@ -396,7 +396,7 @@ func (pool *TxPool) scheduleReorgLoop() {
 			if dirtyAccounts == nil {
 				dirtyAccounts = req
 			} else {
-				//dirtyAccounts.merge(req)
+				dirtyAccounts.merge(req)
 			}
 			launchNextRun = true
 			pool.reorgDoneCh <- nextDone
@@ -563,13 +563,13 @@ func (pool *TxPool) reset(oldHead, newHead *block.Header) {
 	if newHead == nil {
 		newHead = pool.chain.CurrentBlock().Header() // 测试期间的特殊情况
 	}
-	statedb, err := pool.chain.StateAt(newHead.Root)
+	operationdb, err := pool.chain.StateAt(newHead.Root)
 	if err != nil {
 		log.Error("Failed to reset txpool state", "terr", err)
 		return
 	}
-	pool.currentState = statedb
-	pool.pendingNonces = newTxNoncer(statedb)
+	pool.currentState = operationdb
+	pool.pendingNonces = newTxNoncer(operationdb)
 	pool.currentMaxGas = newHead.GasLimit
 
 	// 注入因reorgs而丢弃的任何事务
@@ -1429,6 +1429,14 @@ func (as *accountSet) flatten() []entity.Address {
 	return *as.cache
 }
 
+// “合并”将“其他”集中的所有地址添加到“as”中。
+func (as *accountSet) merge(other *accountSet) {
+	for addr := range other.accounts {
+		as.accounts[addr] = struct{}{}
+	}
+	as.cache = nil
+}
+
 //包含检查给定地址是否包含在集合中。
 func (as *accountSet) contains(addr entity.Address) bool {
 	_, exist := as.accounts[addr]
@@ -1478,9 +1486,9 @@ type txNoncer struct {
 }
 
 // newTxNoncer创建一个新的虚拟状态数据库来跟踪池nonce。
-func newTxNoncer(statedb *operationdb.OperationDB) *txNoncer {
+func newTxNoncer(operationdb *operationdb.OperationDB) *txNoncer {
 	return &txNoncer{
-		fallback: statedb.Copy(),
+		fallback: operationdb.Copy(),
 		nonces:   make(map[entity.Address]uint64),
 	}
 }
@@ -1792,11 +1800,11 @@ func (m *txSortedMap) reheap() {
 //Ready检索从提供的nonce开始的、可供处理的事务的顺序递增列表。返回的事务将从列表中删除。
 //注意，还将返回nonce低于start的所有事务，以防止进入无效状态。这不是应该发生的事情，但自我纠正比失败要好！
 func (m *txSortedMap) Ready(start uint64) block.Transactions {
-	// Short circuit if no transactions are available
+	// 如果没有可用的事务，则短路
 	if m.index.Len() == 0 || (*m.index)[0] > start {
 		return nil
 	}
-	// Otherwise start accumulating incremental transactions
+	// 否则，开始累积增量事务
 	var ready block.Transactions
 	for next := (*m.index)[0]; m.index.Len() > 0 && (*m.index)[0] == next; next++ {
 		ready = append(ready, m.items[next])

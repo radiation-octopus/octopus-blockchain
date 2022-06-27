@@ -103,6 +103,16 @@ octopus:
         is: true
     path:
       all: \$
+  entity:
+    binding:
+      chainConfig:
+        ChainID: "666"
+        engine: "POW"
+  miner:
+    binding:
+      config:
+        notify: ["1","2"]
+        noverify: true
   #  链初始配置
   blockchain:
     binding:

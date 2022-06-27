@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "github.com/radiation-octopus/octopus-blockchain/blockchain"
+	_ "github.com/radiation-octopus/octopus-blockchain/consensus/octell"
 	_ "github.com/radiation-octopus/octopus-blockchain/node"
 	_ "github.com/radiation-octopus/octopus-blockchain/oct"
 	_ "github.com/radiation-octopus/octopus-blockchain/operationconsole"

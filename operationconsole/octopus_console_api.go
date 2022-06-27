@@ -69,7 +69,7 @@ type Backend interface {
 	SubscribePendingLogsEvent(ch chan<- []*log.OctopusLog) blockchain.Subscription
 	SubscribeRemovedLogsEvent(ch chan<- blockchain.RemovedLogsEvent) blockchain.Subscription
 
-	ChainConfig() *blockchain.ChainConfig
+	ChainConfig() *entity.ChainConfig
 	Engine() consensus.Engine
 }
 
@@ -209,7 +209,7 @@ func (o *OctAPIBackend) SubscribeRemovedLogsEvent(ch chan<- blockchain.RemovedLo
 	panic("implement me")
 }
 
-func (o *OctAPIBackend) ChainConfig() *blockchain.ChainConfig {
+func (o *OctAPIBackend) ChainConfig() *entity.ChainConfig {
 	return o.oct.BlockChain().Config()
 }
 

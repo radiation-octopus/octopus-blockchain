@@ -10,6 +10,7 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationutils"
+	"github.com/radiation-octopus/octopus-blockchain/terr"
 	"github.com/radiation-octopus/octopus-blockchain/transition"
 	"github.com/radiation-octopus/octopus/log"
 	"math/big"
@@ -52,21 +53,25 @@ const (
 
 	// staleThreshold是可接受的陈旧块的最大深度。
 	staleThreshold = 7
+)
 
+const (
+	commitInterruptNone int32 = iota
 	commitInterruptNewHead
+	commitInterruptResubmit
 )
 
 var (
-	errBlockInterruptedByNewHead  = errors.New("新负责人在构建模块时到达")
-	errBlockInterruptedByRecommit = errors.New("构建块时重新提交中断")
+	errBlockInterruptedByNewHead  = errors.New("The new owner arrives when building the module")
+	errBlockInterruptedByRecommit = errors.New("Resubmit interrupt on building block")
 )
 
 type worker struct {
-	config *Config
-	//chainConfig *params.ChainConfig
-	engine consensus.Engine
-	oct    Backend
-	chain  *blockchain.BlockChain
+	config      *Config
+	chainConfig *entity.ChainConfig
+	engine      consensus.Engine
+	oct         Backend
+	chain       *blockchain.BlockChain
 
 	// 订阅
 	pendingLogsFeed blockchain.Feed
@@ -294,9 +299,9 @@ func (w *worker) mainLoop() {
 				//}
 			} else {
 				//特殊情况下，如果共识引擎为0周期团（开发模式），请在此提交密封工作，因为所有空提交都将被团拒绝。当然，提前封存（空提交）已禁用。
-				//if w.chainConfig.Clique != nil && w.chainConfig.Clique.Period == 0 {
-				//	w.commitWork(nil, true, time.Now().Unix())
-				//}
+				if w.chainConfig.Engine == "" {
+					w.commitWork(nil, true, time.Now().Unix())
+				}
 			}
 			atomic.AddInt32(&w.newTxs, int32(len(ev.Txs)))
 
@@ -347,8 +352,7 @@ func (w *worker) commitWork(interrupt *int32, noempty bool, timestamp int64) {
 
 	w.commit(work.copy(), w.fullTaskHook, true, start)
 
-	// Swap out the old work with the new one, terminating any leftover
-	// prefetcher processes in the mean time and starting a new one.
+	// 用新的工作替换旧的工作，同时终止所有剩余的预取进程并启动新的预取进程。
 	if w.current != nil {
 		w.current.discard()
 	}
@@ -409,15 +413,15 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 	//if w.chainConfig.IsLondon(header.Number) {
 	//	header.BaseFee = misc.CalcBaseFee(w.chainConfig, parent.Header())
 	//	if !w.chainConfig.IsLondon(parent.Number()) {
-	//		parentGasLimit := parent.GasLimit() * params.ElasticityMultiplier
-	//		header.GasLimit = core.CalcGasLimit(parentGasLimit, w.config.GasCeil)
+	//		parentGasLimit := parent.GasLimit() * entity.ElasticityMultiplier
+	//		header.GasLimit = blockchain.CalcGasLimit(parentGasLimit, w.config.GasCeil)
 	//	}
 	//}
 	// 使用默认或自定义共识引擎运行共识准备。
-	//if terr := w.engine.Prepare(w.chain, header); terr != nil {
-	//	log.Error("Failed to prepare header for sealing", "terr", terr)
-	//	return nil, terr
-	//}
+	if terr := w.engine.Prepare(w.chain, header); terr != nil {
+		log.Error("Failed to prepare header for sealing", "terr", terr)
+		return nil, terr
+	}
 	// 如果在奇怪的状态下开始工作，可能会发生这种情况。请注意genParams。coinbase可以与header不同。Coinbase-since-clique算法可以修改标头中的Coinbase字段。
 	env, err := w.makeEnv(parent, header, genParams.coinbase)
 	if err != nil {
@@ -426,7 +430,7 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 	}
 	// 只有在允许的情况下，才能为密封工作积累叔叔。
 	//if !genParams.noUncle {
-	//	commitUncles := func(blocks map[operationutils.Hash]*block.Block) {
+	//	commitUncles := func(blocks map[entity.Hash]*block.Block) {
 	//		for hash, uncle := range blocks {
 	//			if len(env.uncles) == 2 {
 	//				break
@@ -448,22 +452,22 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 // makeEnv为密封块创建新环境。
 func (w *worker) makeEnv(parent *block.Block, header *block.Header, coinbase entity.Address) (*environment, error) {
 	// 检索要在顶部执行的父状态，并为工作者启动一个预取程序，以加快封块速度。
-	state, err := w.chain.StateAt(parent.Root())
+	operation, err := w.chain.StateAt(parent.Root())
 	if err != nil {
 		// 注意：由于可以在任意父块上创建密封块，但父块的状态可能已经被修剪，因此将来需要进行必要的状态恢复。
 		// 可接受的最大reorg深度可由最终试块限制
-		state, err = w.oct.StateAtBlock(parent, 1024, nil, false, false)
+		operation, err = w.oct.StateAtBlock(parent, 1024, nil, false, false)
 		log.Warn("Recovered mining state", "root", parent.Root(), "terr", err)
 	}
 	if err != nil {
 		return nil, err
 	}
-	//state.StartPrefetcher("miner")
+	//operation.StartPrefetcher("miner")
 
 	// 注：传递的coinbase可能与header不同。
 	env := &environment{
 		signer:    block.MakeSigner(header.Number),
-		state:     state,
+		operation: operation,
 		coinbase:  coinbase,
 		ancestors: mapset.NewSet(),
 		family:    mapset.NewSet(),
@@ -478,7 +482,7 @@ func (w *worker) makeEnv(parent *block.Block, header *block.Header, coinbase ent
 		env.family.Add(ancestor.Hash())
 		env.ancestors.Add(ancestor.Hash())
 	}
-	// Keep track of transactions which return errors so they can be removed
+	// 跟踪返回错误的事务，以便将其删除
 	env.tcount = 0
 	return env, nil
 }
@@ -492,12 +496,14 @@ func (w *worker) commit(env *environment, interval func(), update bool, start ti
 		}
 		// 创建本地环境副本，避免与快照状态的数据竞争。
 		env := env.copy()
-		//block, terr := w.engine.FinalizeAndAssemble(w.chain, env.header, env.state, env.txs, env.unclelist(), env.receipts)
-		block := block.NewBlock(env.header, env.txs, env.receipts)
+		block, terr := w.engine.FinalizeAndAssemble(w.chain, env.header, env.operation, env.txs, env.unclelist(), env.receipts)
+		if terr != nil {
+			return terr
+		}
 		// 如果我们是后期合并，只需忽略
 		if !w.isTTDReached(block.Header()) {
 			select {
-			case w.taskCh <- &task{receipts: env.receipts, state: env.state, block: block, createdAt: time.Now()}:
+			case w.taskCh <- &task{receipts: env.receipts, state: env.operation, block: block, createdAt: time.Now()}:
 				//w.unconfirmed.Shift(block.NumberU64() - 1)
 				log.Info("Commit new sealing work", "number", block.Number(),
 					"uncles", len(env.uncles), "txs", env.tcount,
@@ -563,26 +569,26 @@ func (w *worker) commitTransactions(env *environment, txs *block.TransactionsByP
 		//（3） 工人用任何新到达的事务重新创建密封块，中断信号为2。
 		//对于前两种情况，半成品将被丢弃。
 		//对于第三种情况，半成品将提交给共识引擎。
-		//if interrupt != nil && atomic.LoadInt32(interrupt) != commitInterruptNone {
-		//	// Notify resubmit loop to increase resubmitting interval due to too frequent commits.
-		//	if atomic.LoadInt32(interrupt) == commitInterruptResubmit {
-		//		ratio := float64(gasLimit-env.gasPool.Gas()) / float64(gasLimit)
-		//		if ratio < 0.1 {
-		//			ratio = 0.1
-		//		}
-		//		w.resubmitAdjustCh <- &intervalAdjust{
-		//			ratio: ratio,
-		//			inc:   true,
-		//		}
-		//		return errBlockInterruptedByRecommit
-		//	}
-		//	return errBlockInterruptedByNewHead
-		//}
-		// 如果我们没有足够的gas进行进一步的交易，那么我们就完蛋了
-		//if env.gasPool.Gas() < params.TxGas {
-		//	log.Trace("Not enough gas for further transactions", "have", env.gasPool, "want", params.TxGas)
-		//	break
-		//}
+		if interrupt != nil && atomic.LoadInt32(interrupt) != commitInterruptNone {
+			// 由于提交过于频繁，通知重新提交循环以增加重新提交间隔。
+			if atomic.LoadInt32(interrupt) == commitInterruptResubmit {
+				ratio := float64(gasLimit-env.gasPool.Gas()) / float64(gasLimit)
+				if ratio < 0.1 {
+					ratio = 0.1
+				}
+				w.resubmitAdjustCh <- &intervalAdjust{
+					ratio: ratio,
+					inc:   true,
+				}
+				return errBlockInterruptedByRecommit
+			}
+			return errBlockInterruptedByNewHead
+		}
+		//如果我们没有足够的gas进行进一步的交易，那么我们就完蛋了
+		if env.gasPool.Gas() < entity.TxGas {
+			log.Error("Not enough gas for further transactions", "have", env.gasPool, "want", entity.TxGas)
+			break
+		}
 		// 检索下一个事务，如果全部完成，则中止
 		tx := txs.Peek()
 		if tx == nil {
@@ -590,33 +596,32 @@ func (w *worker) commitTransactions(env *environment, txs *block.TransactionsByP
 		}
 		//此处可以忽略错误。该错误已在事务接受期间被检查为事务池。
 		// 无论当前hf如何，我们都使用eip155签名者。
-		//from, _ := block.Sender(env.signer, tx)
-		// 检查发送是否受重播保护。如果我们不在EIP155 hf阶段，开始忽略发送方，直到我们这样做。
+		from, _ := block.Sender(env.signer, tx)
+		//检查发送是否受重播保护。如果我们不在EIP155 hf阶段，开始忽略发送方，直到我们这样做。
 		//if tx.Protected() && !w.chainConfig.IsEIP155(env.header.Number) {
-		//	log.Trace("Ignoring reply protected transaction", "hash", tx.Hash(), "eip155", w.chainConfig.EIP155Block)
-		//
+		//	log.Error("Ignoring reply protected transaction", "hash", tx.Hash(), "eip155", w.chainConfig.EIP155Block)
 		//	txs.Pop()
 		//	continue
 		//}
 		// 开始执行事务
-		env.state.Prepare(tx.Hash(), env.tcount)
+		env.operation.Prepare(tx.Hash(), env.tcount)
 
 		logs, err := w.commitTransaction(env, tx)
 		switch {
-		//case errors.Is(terr, core.ErrGasLimitReached):
-		//	//弹出当前的天然气交易，而不从帐户转入下一个交易
-		//	log.Trace("Gas limit exceeded for current block", "sender", from)
-		//	txs.Pop()
-		//
-		//case errors.Is(terr, core.ErrNonceTooLow):
-		//	// 事务池和miner、shift之间的新head通知数据竞争
-		//	log.Trace("Skipping transaction with low nonce", "sender", from, "nonce", tx.Nonce())
-		//	txs.Shift()
-		//
-		//case errors.Is(terr, core.ErrNonceTooHigh):
-		//	//事务池和miner之间的Reorg通知数据竞争，跳过帐户
-		//	log.Trace("Skipping account with hight nonce", "sender", from, "nonce", tx.Nonce())
-		//	txs.Pop()
+		case errors.Is(err, terr.ErrGasLimitReached):
+			//弹出当前的gas交易，而不从帐户转入下一个交易
+			log.Error("Gas limit exceeded for current block", "sender", from)
+			txs.Pop()
+
+		case errors.Is(err, terr.ErrNonceTooLow):
+			// 事务池和miner、shift之间的新head通知数据竞争
+			log.Error("Skipping transaction with low nonce", "sender", from, "nonce", tx.Nonce())
+			txs.Shift()
+
+		case errors.Is(err, terr.ErrNonceTooHigh):
+			//事务池和miner之间的Reorg通知数据竞争，跳过帐户
+			log.Error("Skipping account with hight nonce", "sender", from, "nonce", tx.Nonce())
+			txs.Pop()
 
 		case errors.Is(err, nil):
 			// 一切正常，从同一个帐户收集日志并在下一个事务中转移
@@ -624,10 +629,10 @@ func (w *worker) commitTransactions(env *environment, txs *block.TransactionsByP
 			env.tcount++
 			txs.Shift()
 
-		//case errors.Is(terr, core.ErrTxTypeNotSupported):
-		//	// 弹出不受支持的事务，而不从帐户转入下一个事务
-		//	log.Trace("Skipping unsupported transaction type", "sender", from, "type", tx.Type())
-		//	txs.Pop()
+		case errors.Is(err, terr.ErrTxTypeNotSupported):
+			// 弹出不受支持的事务，而不从帐户转入下一个事务
+			log.Error("Skipping unsupported transaction type", "sender", from, "type", tx.Type())
+			txs.Pop()
 
 		default:
 			// 奇怪的terr，放弃事务并获得下一个事务（注意，nonce too high子句将阻止我们徒劳地执行）。
@@ -656,11 +661,11 @@ func (w *worker) commitTransactions(env *environment, txs *block.TransactionsByP
 }
 
 func (w *worker) commitTransaction(env *environment, tx *block.Transaction) ([]*log.OctopusLog, error) {
-	snap := env.state.Snapshot()
+	//snap := env.operation.Snapshot()
 
-	receipt, err := blockchain.ApplyTransaction(w.chain, &env.coinbase, env.gasPool, env.state, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig())
+	receipt, err := blockchain.ApplyTransaction(w.chain, &env.coinbase, env.gasPool, env.operation, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig())
 	if err != nil {
-		env.state.RevertToSnapshot(snap)
+		//env.operation.RevertToSnapshot(snap)
 		return nil, err
 	}
 	env.txs = append(env.txs, tx)
@@ -696,7 +701,7 @@ func (w *worker) newWorkLoop(recommit time.Duration) {
 		timer.Reset(recommit)
 		atomic.StoreInt32(&w.newTxs, 0)
 	}
-	// clearPending cleans the stale pending tasks.
+	// clearPending清除过时的挂起任务。
 	clearPending := func(number uint64) {
 		w.pendingMu.Lock()
 		for h, t := range w.pendingTasks {
@@ -943,7 +948,7 @@ type intervalAdjust struct {
 type environment struct {
 	signer block.Signer //签名者
 
-	state     *operationdb.OperationDB // 在此处应用状态更改
+	operation *operationdb.OperationDB // 在此处应用状态更改
 	ancestors mapset.Set               //祖先集（用于检查叔叔父有效性）
 	family    mapset.Set               // family集合（用于检查叔叔是否无效）
 	tcount    int                      // 循环中的tx计数
@@ -958,17 +963,26 @@ type environment struct {
 
 //discard终止后台预取程序go例程。应始终为所有创建的环境实例调用它，否则可能会发生go例程泄漏。
 func (env *environment) discard() {
-	if env.state == nil {
+	if env.operation == nil {
 		return
 	}
-	env.state.StopPrefetcher()
+	env.operation.StopPrefetcher()
 }
 
-// copy creates a deep copy of environment.
+// unclelist以列表格式返回包含的uncles。
+func (env *environment) unclelist() []*block.Header {
+	var uncles []*block.Header
+	for _, uncle := range env.uncles {
+		uncles = append(uncles, uncle)
+	}
+	return uncles
+}
+
+// 复制创建环境的深度副本。
 func (env *environment) copy() *environment {
 	cpy := &environment{
-		signer: env.signer,
-		//state:     env.state.Copy(),
+		signer:    env.signer,
+		operation: env.operation.Copy(),
 		ancestors: env.ancestors.Clone(),
 		family:    env.family.Clone(),
 		tcount:    env.tcount,

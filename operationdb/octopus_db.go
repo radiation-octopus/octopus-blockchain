@@ -1,7 +1,6 @@
 package operationdb
 
 import (
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"io"
 )
 
@@ -29,10 +28,10 @@ type Writer interface {
 
 type KeyValueReader interface {
 	//是否存在键
-	IsHas(mark string, key string) (bool, error)
+	IsHas(key []byte) (bool, error)
 
 	//通过键检索header值
-	Query(mark string, key string) *block.Header
+	Get(key []byte) ([]byte, error)
 }
 
 type KeyValueWriter interface {

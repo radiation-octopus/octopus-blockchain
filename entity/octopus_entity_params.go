@@ -11,11 +11,21 @@ const (
 
 	GenesisGasLimit uint64 = 4712388 // 创世区块Gas限制
 
+	BaseFeeChangeDenominator = 8          // 限制基本费用在区块之间可以更改的金额。
+	ElasticityMultiplier     = 2          // 限制EIP-1559区块可能具有的最大gas限制。
+	InitialBaseFee           = 1000000000 // EIP-1559区块的初始基本费用。
+
 	cao    = 1
 	Gcao   = 1e9
 	Octcao = 1e18
 )
 
 var (
-	GenesisDifficulty = big.NewInt(131072) //创世区块难度值
+	DifficultyBoundDivisor = big.NewInt(2048)   // 难度的界限除数，用于更新计算。
+	GenesisDifficulty      = big.NewInt(131072) //创世区块难度值
+	MinimumDifficulty      = big.NewInt(131072) // 困难可能达到的最低限度。
+	DurationLimit          = big.NewInt(13)     // blocktime持续时间上的决策边界，用于确定是否应该提高难度。
 )
+
+// DAOFOKEXTRANGE是从DAO分叉点开始的连续块数，用于覆盖中的额外数据以防止无分叉攻击。
+var DAOForkExtraRange = big.NewInt(10)

@@ -1,16 +1,26 @@
 package consensus
 
 import (
+	"errors"
 	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"math/big"
 )
 
+var (
+	// 当验证块需要未知的祖先时，将返回ErrUnknownAncestor。
+	ErrUnknownAncestor = errors.New("unknown ancestor")
+	// 根据当前节点，当块的时间戳在未来时，将返回ErrFutureBlock。
+	ErrFutureBlock = errors.New("block in the future")
+	// 如果块的编号不等于其父块的编号加1，则返回ErrInvalidNumber。
+	ErrInvalidNumber = errors.New("invalid block number")
+)
+
 //该接口定义了验证期间访问本地本地区块两所需的一小部分方法
 type ChainHeaderReader interface {
-	// Config retrieves the blockchain's chain configuration.
-	//Config() *params.ChainConfig
+	// Config检索区块链的链配置。
+	Config() *entity.ChainConfig
 
 	// 从本地链检索当前头
 	CurrentHeader() *block.Header
@@ -34,6 +44,9 @@ type Engine interface {
 	//表头验证器，该方法返回退出通道以终止操作，验证顺序为切片排序
 	VerifyHeaders(chain ChainHeaderReader, headers []*block.Header, seals []bool) (chan<- struct{}, <-chan error)
 
+	// Prepare根据特定引擎的规则初始化块标头的一致性字段。更改以内联方式执行。
+	Prepare(chain ChainHeaderReader, header *block.Header) error
+
 	// FinalizeAndAssemble运行任何交易后状态修改（例如区块奖励）并组装最终区块。
 	//注意：可能会更新区块标题和状态数据库，以反映最终确定时发生的任何共识规则（例如区块奖励）。
 	FinalizeAndAssemble(chain ChainHeaderReader, header *block.Header, state *operationdb.OperationDB, txs []*block.Transaction,
@@ -45,6 +58,9 @@ type Engine interface {
 
 	// SealHash返回块在被密封之前的哈希值。
 	SealHash(header *block.Header) entity.Hash
+
+	// CalcDifficulty是难度调整算法。它返回新块应该具有的难度。
+	CalcDifficulty(chain ChainHeaderReader, time uint64, parent *block.Header) *big.Int
 }
 
 // FinalizeAndAssemble 实现 consensus.Engine

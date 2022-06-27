@@ -1,5 +1,8 @@
 package operationdb
 
+// IdealBatchSize定义理想情况下应在一次写入中添加的数据批的大小。
+const IdealBatchSize = 100 * 1024
+
 // Batch是一个只写数据库，在调用write时将更改提交到其主机数据库。批处理不能同时使用。
 type Batch interface {
 	KeyValueWriter
