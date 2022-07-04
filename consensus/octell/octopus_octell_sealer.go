@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus/log"
 	"math/big"
@@ -30,7 +30,7 @@ var (
 const remoteSealerTimeout = 1 * time.Second
 
 //mine是一个实际的工作证明工作者，它从种子开始搜索一个nonce，从而获得正确的最终块难度。
-func (octell *Octell) mine(b *block.Block, id int, seed uint64, abort chan struct{}, found chan *block.Block) {
+func (octell *Octell) mine(b *block2.Block, id int, seed uint64, abort chan struct{}, found chan *block2.Block) {
 	//从标题中提取一些数据
 	var (
 		header  = b.Header()
@@ -67,8 +67,8 @@ search:
 			digest, result := hashimotoFull(dataset.dataset, hash, nonce)
 			if powBuffer.SetBytes(result).Cmp(target) <= 0 {
 				// 找到正确的nonce，使用它创建新的标头
-				header = block.CopyHeader(header)
-				header.Nonce = block.EncodeNonce(nonce)
+				header = block2.CopyHeader(header)
+				header.Nonce = block2.EncodeNonce(nonce)
 				header.MixDigest = entity.BytesToHash(digest)
 
 				// 密封并返回块（如果仍然需要）
@@ -88,9 +88,9 @@ search:
 }
 
 type remoteSealer struct {
-	works        map[entity.Hash]*block.Block
+	works        map[entity.Hash]*block2.Block
 	rates        map[entity.Hash]hashrate
-	currentBlock *block.Block
+	currentBlock *block2.Block
 	currentWork  [4]string
 	notifyCtx    context.Context
 	cancelNotify context.CancelFunc // 取消所有通知请求。
@@ -99,7 +99,7 @@ type remoteSealer struct {
 	octell       *Octell
 	noverify     bool
 	notifyURLs   []string
-	results      chan<- *block.Block
+	results      chan<- *block2.Block
 	workCh       chan *sealTask   // 将新工作推送至远程封口机的通知通道和相关结果通道。
 	fetchWorkCh  chan *sealWork   // 用于远程封口机的通道，用于提取采矿作业。
 	submitWorkCh chan *mineResult // 用于远程封口机提交采矿结果的通道。
@@ -117,7 +117,7 @@ func startRemoteSealer(octell *Octell, urls []string, noverify bool) *remoteSeal
 		notifyURLs:   urls,
 		notifyCtx:    ctx,
 		cancelNotify: cancel,
-		works:        make(map[entity.Hash]*block.Block),
+		works:        make(map[entity.Hash]*block2.Block),
 		rates:        make(map[entity.Hash]hashrate),
 		workCh:       make(chan *sealTask),
 		fetchWorkCh:  make(chan *sealWork),
@@ -207,7 +207,7 @@ func (s *remoteSealer) loop() {
 //结果[1]，用于DAG的32字节十六进制编码种子哈希
 //结果[2]，32字节十六进制编码边界条件（“目标”），2^256/难度
 //结果[3]，十六进制编码块编号
-func (s *remoteSealer) makeWork(block *block.Block) {
+func (s *remoteSealer) makeWork(block *block2.Block) {
 	hash := s.octell.SealHash(block.Header())
 	s.currentWork[0] = hash.Hex()
 	s.currentWork[1] = entity.BytesToHash(SeedHash(block.NumberU64())).Hex()
@@ -260,7 +260,7 @@ func (s *remoteSealer) sendNotification(ctx context.Context, url string, json []
 }
 
 // submitWork验证提交的pow解决方案，返回该解决方案是否被接受（不可能既是错误的pow，也可能是任何其他错误，例如没有挂起的工作或陈旧的挖掘结果）。
-func (s *remoteSealer) submitWork(nonce block.BlockNonce, mixDigest entity.Hash, sealhash entity.Hash) bool {
+func (s *remoteSealer) submitWork(nonce block2.BlockNonce, mixDigest entity.Hash, sealhash entity.Hash) bool {
 	if s.currentBlock == nil {
 		log.Error("Pending work without block", "sealhash", sealhash)
 		return false
@@ -311,13 +311,13 @@ func (s *remoteSealer) submitWork(nonce block.BlockNonce, mixDigest entity.Hash,
 
 // sealTask使用远程密封剂螺纹的相对结果通道包裹密封块。
 type sealTask struct {
-	block   *block.Block
-	results chan<- *block.Block
+	block   *block2.Block
+	results chan<- *block2.Block
 }
 
 //mineResult包装指定块的pow解决方案参数。
 type mineResult struct {
-	nonce     block.BlockNonce
+	nonce     block2.BlockNonce
 	mixDigest entity.Hash
 	hash      entity.Hash
 

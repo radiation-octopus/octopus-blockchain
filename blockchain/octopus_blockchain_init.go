@@ -1,6 +1,9 @@
 package blockchain
 
-import "github.com/radiation-octopus/octopus/director"
+import (
+	"github.com/radiation-octopus/octopus-blockchain/oct/octconfig"
+	"github.com/radiation-octopus/octopus/director"
+)
 
 //初始化octopus_blockchain
 func init() {
@@ -9,4 +12,6 @@ func init() {
 	//把停止注入
 	director.Register(new(BlockChainStop))
 	director.Register(new(BlockChain))
+	//配置注入
+	director.Register(new(octconfig.Config))
 }

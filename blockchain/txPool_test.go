@@ -3,10 +3,11 @@ package blockchain
 import (
 	"crypto/ecdsa"
 	"errors"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
-	"github.com/radiation-octopus/octopus-blockchain/memorydb"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
+	"github.com/radiation-octopus/octopus-blockchain/event"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
 	"math/big"
@@ -70,8 +71,8 @@ func setupTxPool() (*TxPool, *ecdsa.PrivateKey) {
 }
 
 func setupTxPoolWithConfig(config *entity.ChainConfig) (*TxPool, *ecdsa.PrivateKey) {
-	statedb, _ := operationdb.NewOperationDb(entity.Hash{}, operationdb.NewDatabase(memorydb.NewMemoryDatabase()))
-	blockcha := &testBlockChain{10000000, statedb, new(Feed)}
+	statedb, _ := operationdb.NewOperationDb(entity.Hash{}, rawdb.NewDatabase(rawdb.NewMemoryDatabase()))
+	blockcha := &testBlockChain{10000000, statedb, new(event.Feed)}
 
 	key, _ := crypto.GenerateKey()
 	pool := NewTxPool(testTxPoolConfig, blockcha)
@@ -84,16 +85,16 @@ func setupTxPoolWithConfig(config *entity.ChainConfig) (*TxPool, *ecdsa.PrivateK
 type testBlockChain struct {
 	gasLimit      uint64 // 必须是64位对齐（原子访问）的第一个字段
 	statedb       *operationdb.OperationDB
-	chainHeadFeed *Feed
+	chainHeadFeed *event.Feed
 }
 
-func (bc *testBlockChain) CurrentBlock() *block.Block {
-	return block.NewBlock(&block.Header{
+func (bc *testBlockChain) CurrentBlock() *block2.Block {
+	return block2.NewBlock(&block2.Header{
 		GasLimit: atomic.LoadUint64(&bc.gasLimit),
 	}, nil, nil)
 }
 
-func (bc *testBlockChain) GetBlock(hash entity.Hash, number uint64) *block.Block {
+func (bc *testBlockChain) GetBlock(hash entity.Hash, number uint64) *block2.Block {
 	return bc.CurrentBlock()
 }
 
@@ -101,21 +102,21 @@ func (bc *testBlockChain) StateAt(entity.Hash) (*operationdb.OperationDB, error)
 	return bc.statedb, nil
 }
 
-func (bc *testBlockChain) SubscribeChainHeadEvent(ch chan<- ChainHeadEvent) Subscription {
+func (bc *testBlockChain) SubscribeChainHeadEvent(ch chan<- event.ChainHeadEvent) event.Subscription {
 	return bc.chainHeadFeed.Subscribe(ch)
 }
 
-func transaction(nonce uint64, gaslimit uint64, key *ecdsa.PrivateKey) *block.Transaction {
+func transaction(nonce uint64, gaslimit uint64, key *ecdsa.PrivateKey) *block2.Transaction {
 	return pricedTransaction(nonce, gaslimit, big.NewInt(1), key)
 }
 
-func pricedTransaction(nonce uint64, gaslimit uint64, gasprice *big.Int, key *ecdsa.PrivateKey) *block.Transaction {
-	tx, _ := block.SignTx(block.NewTransaction(nonce, entity.Address{}, big.NewInt(100), gaslimit, gasprice, nil), block.HomesteadSigner{}, key)
+func pricedTransaction(nonce uint64, gaslimit uint64, gasprice *big.Int, key *ecdsa.PrivateKey) *block2.Transaction {
+	tx, _ := block2.SignTx(block2.NewTransaction(nonce, entity.Address{}, big.NewInt(100), gaslimit, gasprice, nil), block2.HomesteadSigner{}, key)
 	return tx
 }
 
-func deriveSender(tx *block.Transaction) (entity.Address, error) {
-	return block.Sender(block.HomesteadSigner{}, tx)
+func deriveSender(tx *block2.Transaction) (entity.Address, error) {
+	return block2.Sender(block2.HomesteadSigner{}, tx)
 }
 
 func testAddBalance(pool *TxPool, addr entity.Address, amount *big.Int) {

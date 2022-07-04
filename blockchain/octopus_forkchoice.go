@@ -2,8 +2,8 @@ package blockchain
 
 import (
 	crand "crypto/rand"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"math"
 	"math/big"
 	mrand "math/rand"
@@ -25,10 +25,10 @@ type ForkChoice struct {
 	// Miners will prefer to choose the local mined block if the
 	// local td is equal to the extern one. It can be nil for light
 	// client
-	preserve func(header *block.Header) bool
+	preserve func(header *block2.Header) bool
 }
 
-func NewForkChoice(chainReader ChainReader, preserve func(header *block.Header) bool) *ForkChoice {
+func NewForkChoice(chainReader ChainReader, preserve func(header *block2.Header) bool) *ForkChoice {
 	// Seed a fast but crypto originating random generator
 	seed, err := crand.Int(crand.Reader, big.NewInt(math.MaxInt64))
 	if err != nil {

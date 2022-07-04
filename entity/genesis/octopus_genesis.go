@@ -1,14 +1,15 @@
-package blockchain
+package genesis
 
 import (
 	"encoding/json"
 	"errors"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
-	"github.com/radiation-octopus/octopus-blockchain/memorydb"
+	"github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
+	"github.com/radiation-octopus/octopus-blockchain/typedb"
 	"github.com/radiation-octopus/octopus/log"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
@@ -34,14 +35,14 @@ type Genesis struct {
 }
 
 // Commit将genesis规范的块和状态写入数据库。该块作为规范头块提交。
-func (g *Genesis) Commit(db operationdb.Database) (*block.Block, error) {
+func (g *Genesis) Commit(db typedb.Database) (*block.Block, error) {
 	block := g.ToBlock(db)
 	if block.Number().Sign() != 0 {
 		return nil, errors.New("can't commit genesis block with number > 0")
 	}
 	config := g.Config
 	if config == nil {
-		config = AllOctellProtocolChanges
+		config = entity.AllOctellProtocolChanges
 	}
 	//if err := config.CheckConfigForkOrder(); err != nil {
 	//	return nil, err
@@ -52,21 +53,21 @@ func (g *Genesis) Commit(db operationdb.Database) (*block.Block, error) {
 	//if err := g.Alloc.write(db, block.Hash()); err != nil {
 	//	return nil, err
 	//}
-	operationdb.WriteTd(block.Hash(), block.NumberU64(), block.Difficulty())
-	operationdb.WriteBlock(block)
-	operationdb.WriteReceipts(block.Hash(), nil)
-	operationdb.WriteCanonicalHash(block.Hash(), block.NumberU64())
-	operationdb.WriteHeadBlockHash(block.Hash())
+	rawdb.WriteTd(db, block.Hash(), block.NumberU64(), block.Difficulty())
+	rawdb.WriteBlock(db, block)
+	rawdb.WriteReceipts(db, block.Hash(), block.NumberU64(), nil)
+	rawdb.WriteCanonicalHash(db, block.Hash(), block.NumberU64())
+	rawdb.WriteHeadBlockHash(db, block.Hash())
 	//operationdb.WriteHeadFastBlockHash(db, block.Hash())
-	operationdb.WriteHeadHeaderHash(block.Hash())
+	rawdb.WriteHeadHeaderHash(db, block.Hash())
 	//operationdb.WriteChainConfig(db, block.Hash(), config)
 	return block, nil
 }
 
 // ToBlock创建genesis块并将genesis规范的状态写入给定数据库（如果为nil，则丢弃）。
-func (g *Genesis) ToBlock(db operationdb.Database) *block.Block {
+func (g *Genesis) ToBlock(db typedb.Database) *block.Block {
 	if db == nil {
-		db = memorydb.NewMemoryDatabase()
+		db = rawdb.NewMemoryDatabase()
 	}
 	root, err := g.Alloc.flush(db)
 	if err != nil {
@@ -115,7 +116,7 @@ type GenesisAccount struct {
 type GenesisAlloc map[entity.Address]GenesisAccount
 
 // flush将分配的genesis帐户添加到新的statedb中，并将状态更改提交到给定的数据库处理程序中。
-func (ga *GenesisAlloc) flush(db operationdb.Database) (entity.Hash, error) {
+func (ga *GenesisAlloc) flush(db typedb.Database) (entity.Hash, error) {
 	operationdb, err := operationdb.NewOperationDb(entity.Hash{}, operationdb.NewDatabase(db))
 	if err != nil {
 		return entity.Hash{}, err
@@ -140,24 +141,24 @@ func (ga *GenesisAlloc) flush(db operationdb.Database) (entity.Hash, error) {
 }
 
 //write将json封送的genesis状态写入数据库，并将给定的块哈希作为唯一标识符。
-func (ga *GenesisAlloc) write(db operationdb.KeyValueWriter, hash entity.Hash) error {
+func (ga *GenesisAlloc) write(db typedb.KeyValueWriter, hash entity.Hash) error {
 	blob, err := json.Marshal(ga)
 	if err != nil {
 		return err
 	}
-	operationdb.WriteGenesisState(db, hash, blob)
+	rawdb.WriteGenesisState(db, hash, blob)
 	return nil
 }
 
 // DefaultRopstenGenesisBlock返回Ropsten network genesis块。
 func DefaultRopstenGenesisBlock() *Genesis {
 	return &Genesis{
-		Config:     &entity.ChainConfig{ChainID: big.NewInt(3)},
+		Config:     &entity.ChainConfig{ChainID: big.NewInt(666)},
 		Nonce:      66,
 		ExtraData:  utils.Hex2Bytes("0x3535353535353535353535353535353535353535353535353535353535353535"),
 		GasLimit:   16777216,
 		Difficulty: big.NewInt(1048576),
-		//Alloc:      decodePrealloc(ropstenAllocData),
+		Alloc:      decodePrealloc(ropstenAllocData),
 	}
 }
 
@@ -170,7 +171,7 @@ func DefaultGenesisBlock() *Genesis {
 		ExtraData:  utils.Hex2Bytes("0x11bbe8db4e347b4e8c937c1c8370e4b5ed33adb3db69cbdb7a38e1e50b1b82fa"),
 		GasLimit:   50000,
 		Difficulty: big.NewInt(17179869184),
-		Alloc:      decodePrealloc(mainnetAllocData),
+		//Alloc:      decodePrealloc(mainnetAllocData),
 	}
 }
 
@@ -201,12 +202,12 @@ func MakeGenesis() *Genesis {
 	return genesis
 }
 
-func SetupGenesisBlockWithOverride(db operationdb.Database, genesis *Genesis, overrideArrowGlacier, overrideTerminalTotalDifficulty *big.Int) (*entity.ChainConfig, entity.Hash, error) {
+func SetupGenesisBlockWithOverride(db typedb.Database, genesis *Genesis, overrideArrowGlacier, overrideTerminalTotalDifficulty *big.Int) (*entity.ChainConfig, entity.Hash, error) {
 	//if genesis != nil && genesis.Config == nil {
 	//	return params.AllEthashProtocolChanges, entity.Hash{}, errGenesisNoConfig
 	//}
 	// 如果没有存储的genesis块，只需提交新块即可。
-	stored := operationdb.ReadCanonicalHash(0)
+	stored := rawdb.ReadCanonicalHash(db, 0)
 	if (stored == entity.Hash{}) {
 		if genesis == nil {
 			log.Info("Writing default main-net genesis block")

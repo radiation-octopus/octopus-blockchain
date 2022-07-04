@@ -126,7 +126,7 @@ func writeTemporaryKeyFile(file string, content []byte) (string, error) {
 		return "", err
 	}
 	// 原子写入：首先创建一个临时隐藏文件，然后将其移动到位。TempFile分配模式0600。
-	f, err := os.Create(filepath.Dir(file) + "." + filepath.Base(file) + ".tmp")
+	f, err := os.Create(filepath.Dir(file) + "\\" + filepath.Base(file))
 	if err != nil {
 		return "", err
 	}

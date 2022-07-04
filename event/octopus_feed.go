@@ -1,4 +1,4 @@
-package blockchain
+package event
 
 import (
 	"errors"

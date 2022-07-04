@@ -1,17 +1,26 @@
-package operationdb
+package tire
 
 import (
 	"fmt"
 	"github.com/VictoriaMetrics/fastcache"
+	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
-	"github.com/radiation-octopus/octopus-blockchain/operationutils"
+	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
+	"github.com/radiation-octopus/octopus-blockchain/typedb"
 	"github.com/radiation-octopus/octopus/log"
 	"github.com/radiation-octopus/octopus/utils"
 	"io"
 	"reflect"
 	"sync"
 	"time"
+)
+
+var (
+	// emptyRoot是空trie的已知根哈希。
+	emptyRoot = entity.BytesToHash(utils.Hex2Bytes("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"))
+
+	emptyCodeHash = crypto.Keccak256(nil)
 )
 
 // Config定义数据库的所有必要选项。
@@ -26,7 +35,7 @@ type Config struct {
 //注意，trie数据库在其突变中**不是**线程安全的，但在提供单独、独立的节点访问时**是**线程安全的。
 //这种拆分设计的基本原理是，即使在trie执行昂贵的垃圾收集时，也可以提供对RPC处理程序和同步服务器的读取访问。
 type TrieDatabase struct {
-	diskdb KeyValueStore // 成熟trie节点的持久存储
+	diskdb typedb.KeyValueStore // 成熟trie节点的持久存储
 
 	cleans  *fastcache.Cache            // 干净节点RLP的GC友好内存缓存
 	dirties map[entity.Hash]*cachedNode // 脏trie节点的数据和引用关系
@@ -115,9 +124,15 @@ func (n *rawShortNode) encode(w rlp.EncoderBuffer) {
 	w.ListEnd(offset)
 }
 
+// NewDatabase创建一个新的trie数据库来存储临时trie内容，然后再将其写入磁盘或进行垃圾回收。
+//没有创建读缓存，因此所有数据检索都将命中底层磁盘数据库。
+func NewTrieDatabase(diskdb typedb.KeyValueStore) *TrieDatabase {
+	return TrieNewDatabaseWithConfig(diskdb, nil)
+}
+
 // NewDatabaseWithConfig创建一个新的trie数据库来存储临时trie内容，然后再将其写入磁盘或进行垃圾回收。
 //它还充当从磁盘加载的节点的读缓存。
-func trieNewDatabaseWithConfig(diskdb KeyValueStore, config *Config) *TrieDatabase {
+func TrieNewDatabaseWithConfig(diskdb typedb.KeyValueStore, config *Config) *TrieDatabase {
 	var cleans *fastcache.Cache
 	if config != nil && config.Cache > 0 {
 		if config.Journal == "" {
@@ -175,7 +190,7 @@ func (db *TrieDatabase) node(hash entity.Hash) node {
 }
 
 // DiskDB 检索支持trie数据库的持久存储。
-func (db *TrieDatabase) DiskDB() KeyValueStore {
+func (db *TrieDatabase) DiskDB() typedb.KeyValueStore {
 	return db.diskdb
 }
 
@@ -228,10 +243,8 @@ func (db *TrieDatabase) insert(hash entity.Hash, size int, node node) {
 	db.dirtiesSize += utils.StorageSize(entity.HashLength + entry.size)
 }
 
-// Reference adds a new reference from a parent node to a child node.
-// This function is used to add reference between internal trie node
-// and external node(e.g. storage trie root), all internal trie nodes
-// are referenced together by database itself.
+// 引用将新引用从父节点添加到子节点。
+//此函数用于在内部trie节点和外部节点（例如存储trie根）之间添加引用，所有内部trie节点由数据库本身一起引用。
 func (db *TrieDatabase) Reference(child entity.Hash, parent entity.Hash) {
 	db.lock.Lock()
 	defer db.lock.Unlock()
@@ -352,7 +365,7 @@ func (db *TrieDatabase) Commit(node entity.Hash, report bool, callback func(enti
 		}
 		batch.Reset()
 	}
-	// Move the trie itself into the batch, flushing if enough data is accumulated
+	// 将trie自身移动到批次中，如果积累了足够的数据，则进行刷新
 	nodes, storage := len(db.dirties), db.dirtiesSize
 
 	uncacher := &cleaner{db}
@@ -395,7 +408,7 @@ func (db *TrieDatabase) Commit(node entity.Hash, report bool, callback func(enti
 }
 
 //commit是commit的私有锁定版本。
-func (db *TrieDatabase) commit(hash entity.Hash, batch Batch, uncacher *cleaner, callback func(entity.Hash)) error {
+func (db *TrieDatabase) commit(hash entity.Hash, batch typedb.Batch, uncacher *cleaner, callback func(entity.Hash)) error {
 	// 如果节点不存在，则它是以前提交的节点
 	node, ok := db.dirties[hash]
 	if !ok {
@@ -411,11 +424,11 @@ func (db *TrieDatabase) commit(hash entity.Hash, batch Batch, uncacher *cleaner,
 		return err
 	}
 	// 如果我们已达到最佳批量大小，请提交并重新开始
-	WriteTrieNode(batch, hash, node.rlp())
+	rawdb.WriteTrieNode(batch, hash, node.rlp())
 	if callback != nil {
 		callback(hash)
 	}
-	if batch.ValueSize() >= IdealBatchSize {
+	if batch.ValueSize() >= typedb.IdealBatchSize {
 		if err := batch.Write(); err != nil {
 			return err
 		}
@@ -471,8 +484,8 @@ type cleaner struct {
 // Put对数据库写入作出反应，并实现脏数据取消缓存。
 //这是提交操作的后处理步骤，其中已持久化的trie将从脏缓存中移除并移动到干净缓存中。
 //两阶段提交背后的原因是在从内存移动到磁盘时确保数据可用性。
-func (c *cleaner) Put(mark string, key string, rlp []byte) error {
-	hash := entity.BytesToHash(operationutils.FromHex(mark + "-" + key))
+func (c *cleaner) Put(key []byte, rlp []byte) error {
+	hash := entity.BytesToHash(key)
 
 	// 如果该节点不存在，则在此路径上完成
 	node, ok := c.db.dirties[hash]
@@ -495,7 +508,7 @@ func (c *cleaner) Put(mark string, key string, rlp []byte) error {
 	delete(c.db.dirties, hash)
 	c.db.dirtiesSize -= utils.StorageSize(entity.HashLength + int(node.size))
 	if node.children != nil {
-		c.db.dirtiesSize -= utils.StorageSize(cachedNodeChildrenSize + len(node.children)*(entity.HashLength+2))
+		c.db.childrenSize -= utils.StorageSize(cachedNodeChildrenSize + len(node.children)*(entity.HashLength+2))
 	}
 	// 将刷新的节点移动到干净的缓存中，以防止insta重新加载
 	if c.db.cleans != nil {
@@ -505,7 +518,7 @@ func (c *cleaner) Put(mark string, key string, rlp []byte) error {
 	return nil
 }
 
-func (c *cleaner) Delete(mark string, key string) error {
+func (c *cleaner) Delete(key []byte) error {
 	panic("not implemented")
 }
 

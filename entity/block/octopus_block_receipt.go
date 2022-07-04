@@ -43,3 +43,6 @@ func (rs Receipts) EncodeIndex(i int, w *bytes.Buffer) {
 	//	// to the block.
 	//}
 }
+
+// ReceiptForStorage是使用RLP序列化的回执的包装器，它省略了Bloom字段，并进行了重新计算的反序列化。
+type ReceiptForStorage Receipt

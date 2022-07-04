@@ -2,7 +2,7 @@ package accounts
 
 import (
 	"fmt"
-	"github.com/radiation-octopus/octopus-blockchain/blockchain"
+	"github.com/radiation-octopus/octopus-blockchain/event"
 	"reflect"
 	"sort"
 	"sync"
@@ -20,12 +20,12 @@ type Config struct {
 type Manager struct {
 	config      *Config                    // 全球客户经理配置
 	backends    map[reflect.Type][]Backend // 当前注册的后端索引
-	updaters    []blockchain.Subscription  // 所有后端的钱包更新订阅
+	updaters    []event.Subscription       // 所有后端的钱包更新订阅
 	updates     chan WalletEvent           // 后端钱包更改订阅接收器
 	newBackends chan newBackendEvent       // 要由经理跟踪的传入后端
 	wallets     []Wallet                   // 缓存所有注册后端的所有钱包
 
-	feed blockchain.Feed // 钱包馈送通知到达/离开
+	feed event.Feed // 钱包馈送通知到达/离开
 
 	quit chan chan error
 	term chan struct{} // 更新循环终止时通道关闭
@@ -132,7 +132,7 @@ func NewManager(config *Config, backends ...Backend) *Manager {
 	//从所有后端订阅钱包通知
 	updates := make(chan WalletEvent, managerSubBufferSize)
 
-	subs := make([]blockchain.Subscription, len(backends))
+	subs := make([]event.Subscription, len(backends))
 	for i, backend := range backends {
 		subs[i] = backend.Subscribe(updates)
 	}

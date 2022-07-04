@@ -1,6 +1,7 @@
 package rlp
 
 import (
+	"fmt"
 	"io"
 	"reflect"
 	"unsafe"
@@ -133,6 +134,7 @@ func CountValues(b []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		fmt.Println(tagsize + size)
 		b = b[tagsize+size:]
 	}
 	return i, nil
@@ -144,6 +146,7 @@ func readKind(buf []byte) (k Kind, tagsize, contentsize uint64, err error) {
 	}
 	b := buf[0]
 	switch {
+	//0x6B1d1FD04cDEFa7316E52F2bC29014caB34bCe5E
 	case b < 0x80:
 		k = Byte
 		tagsize = 0
@@ -172,7 +175,7 @@ func readKind(buf []byte) (k Kind, tagsize, contentsize uint64, err error) {
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	// Reject values larger than the input slice.
+	// 拒绝大于输入切片的值。
 	if contentsize > uint64(len(buf))-tagsize {
 		return 0, 0, 0, ErrValueTooLarge
 	}

@@ -1,8 +1,8 @@
-package blockchain
+package event
 
 import (
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus/log"
 )
 
@@ -16,22 +16,22 @@ type Subscription interface {
 }
 
 //当一批事务进入事务池时，会过帐NewTxsEvent。
-type NewTxsEvent struct{ Txs []*block.Transaction }
+type NewTxsEvent struct{ Txs []*block2.Transaction }
 
 // 导入块后，将发布NewMinedBlockEvent。
-type NewMinedBlockEvent struct{ Block *block.Block }
+type NewMinedBlockEvent struct{ Block *block2.Block }
 
 // RemovedLogseEvent在发生reorg时发布
 type RemovedLogsEvent struct{ Logs []*log.OctopusLog }
 
 type ChainEvent struct {
-	Block *block.Block
+	Block *block2.Block
 	Hash  entity.Hash
 	Logs  []*log.OctopusLog
 }
 
 type ChainSideEvent struct {
-	Block *block.Block
+	Block *block2.Block
 }
 
-type ChainHeadEvent struct{ Block *block.Block }
+type ChainHeadEvent struct{ Block *block2.Block }

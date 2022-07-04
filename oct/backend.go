@@ -4,12 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/accounts"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/blockchain"
+	"github.com/radiation-octopus/octopus-blockchain/blockchain/blockchainconfig"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/miner"
+	"github.com/radiation-octopus/octopus-blockchain/oct/octconfig"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb/tire"
+	"github.com/radiation-octopus/octopus-blockchain/typedb"
 	"github.com/radiation-octopus/octopus-blockchain/vm"
 	"github.com/radiation-octopus/octopus/log"
 	"math/big"
@@ -18,7 +22,7 @@ import (
 )
 
 type Octopus struct {
-	config *Config
+	config *octconfig.Config
 
 	// Handlers
 	txPool     *blockchain.TxPool
@@ -29,7 +33,7 @@ type Octopus struct {
 	//merger             *consensus.Merger
 
 	// DB interfaces
-	chainDb operationdb.Database // 区块链数据库
+	chainDb typedb.Database // 区块链数据库
 
 	//eventMux       *event.TypeMux
 	Engine         consensus.Engine `autoInjectLang:"octell.Octell"`
@@ -55,14 +59,14 @@ type Octopus struct {
 	//shutdownTracker *shutdowncheck.ShutdownTracker //跟踪节点是否已非正常关闭以及何时关闭
 }
 
-func (s *Octopus) GetCfg() *Config                    { return s.config }
+func (s *Octopus) GetCfg() *octconfig.Config          { return s.config }
 func (s *Octopus) AccountManager() *accounts.Manager  { return s.accountManager }
-func (s *Octopus) ChainDb() operationdb.Database      { return s.chainDb }
+func (s *Octopus) ChainDb() typedb.Database           { return s.chainDb }
 func (s *Octopus) BlockChain() *blockchain.BlockChain { return s.Blockchain }
 func (s *Octopus) TxPool() *blockchain.TxPool         { return s.txPool }
-func (oct *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationdb.OperationDB, checkLive bool, preferDisk bool) (db *operationdb.OperationDB, err error) {
+func (oct *Octopus) StateAtBlock(b *block2.Block, reexec uint64, base *operationdb.OperationDB, checkLive bool, preferDisk bool) (db *operationdb.OperationDB, err error) {
 	var (
-		current  *block.Block
+		current  *block2.Block
 		database operationdb.DatabaseI
 		report   = true
 		origin   = b.NumberU64()
@@ -77,7 +81,7 @@ func (oct *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationd
 	if base != nil {
 		if preferDisk {
 			// 创建短暂的trie。用于隔离活动数据库。否则，通过跟踪创建的内部垃圾将保留到磁盘中。
-			database = operationdb.NewDatabaseWithConfig(oct.chainDb, &operationdb.Config{Cache: 16})
+			database = operationdb.NewDatabaseWithConfig(oct.chainDb, &tire.Config{Cache: 16})
 			if db, err = operationdb.NewOperationDb(b.Root(), database); err == nil {
 				log.Info("Found disk backend for operation trie", "root", b.Root(), "number", b.Number())
 				return db, nil
@@ -92,7 +96,7 @@ func (oct *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationd
 		current = b
 
 		// 创建短暂的trie。用于隔离活动数据库。否则，通过跟踪创建的内部垃圾将保留到磁盘中。
-		database = operationdb.NewDatabaseWithConfig(oct.chainDb, &operationdb.Config{Cache: 16})
+		database = operationdb.NewDatabaseWithConfig(oct.chainDb, &tire.Config{Cache: 16})
 
 		// 如果我们没有检查脏数据库，一定要检查干净的数据库，否则我们会倒转经过一个持久化的块（特定的角案例是来自genesis的链跟踪）。
 		if !checkLive {
@@ -120,7 +124,7 @@ func (oct *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationd
 		}
 		if err != nil {
 			switch err.(type) {
-			case *operationdb.MissingNodeError:
+			case *tire.MissingNodeError:
 				return nil, fmt.Errorf("required historical state unavailable (reexec=%d)", reexec)
 			default:
 				return nil, err
@@ -171,34 +175,9 @@ func (oct *Octopus) StateAtBlock(b *block.Block, reexec uint64, base *operationd
 	return db, nil
 }
 
-type Config struct {
-	//genesis块，如果数据库为空，则插入该块。
-	//如果为零，则使用以太坊主网络块。
-	Genesis *blockchain.Genesis `toml:",omitempty"`
-
-	NetworkId uint64 // 用于选择要连接到的对等方的网络ID
-
-	//SyncMode  downloader.SyncMode
-
-	//将为要连接的节点查询这些URL。
-	EthDiscoveryURLs  []string
-	SnapDiscoveryURLs []string
-
-	DatabaseHandles int `toml:"-"`
-	DatabaseCache   int
-
-	//事务池选项
-	TxPool blockchain.TxPoolConfig
-
-	Miner miner.Config
-
-	// RPCTxFeeCap是发送交易变体的全局交易费（价格*gaslimit）上限。单位为oct。
-	RPCTxFeeCap float64
-}
-
-func (oct *Octopus) start() {
+func (oct *Octopus) start(config *octconfig.Config) {
 	log.Info("oct starting")
-	New(oct)
+	New(oct, config)
 	log.Info("oct 启动完成")
 }
 
@@ -206,25 +185,8 @@ func (oct *Octopus) close() {
 
 }
 
-func New(oct *Octopus) (*Octopus, error) {
-	genesis := blockchain.MakeGenesis()
-	cfg := &Config{
-		Genesis:   genesis,
-		NetworkId: genesis.Config.ChainID.Uint64(),
-		//SyncMode:        downloader.FullSync,
-		DatabaseCache:   256,
-		DatabaseHandles: 256,
-		TxPool:          blockchain.DefaultTxPoolConfig,
-		//GPO:             ethconfig.Defaults.GPO,
-		//Octell:          ethconfig.Defaults.Octell,
-		Miner: miner.Config{
-			Etherbase: entity.Address{1},
-			GasCeil:   genesis.GasLimit * 11 / 10,
-			GasPrice:  big.NewInt(1),
-			Recommit:  time.Second,
-		},
-		RPCTxFeeCap: 1,
-	}
+func New(oct *Octopus, cfg *octconfig.Config) (*Octopus, error) {
+
 	var (
 		backends []accounts.Backend
 		n, p     = accounts.StandardScryptN, accounts.StandardScryptP
@@ -233,11 +195,11 @@ func New(oct *Octopus) (*Octopus, error) {
 	oct.config = cfg
 	oct.accountManager = accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: true}, backends...)
 	oct.closeBloomHandler = make(chan struct{})
-	oct.txPool = blockchain.NewTxPool(blockchain.DefaultTxPoolConfig, oct.Blockchain)
+	oct.txPool = blockchain.NewTxPool(blockchainconfig.DefaultTxPoolConfig, oct.Blockchain)
 	oct.networkID = cfg.NetworkId
 	oct.gasPrice = cfg.Miner.GasPrice
 	oct.chainDb = oct.Blockchain.GetDB()
-	oct.miner = miner.New(oct, &cfg.Miner, oct.Engine)
+	oct.miner = miner.New(oct, &cfg.Miner, oct.Blockchain.Config(), oct.Engine)
 	return oct, nil
 }
 

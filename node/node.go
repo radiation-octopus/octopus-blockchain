@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"github.com/prometheus/tsdb/fileutil"
 	"github.com/radiation-octopus/octopus-blockchain/accounts"
-	"github.com/radiation-octopus/octopus-blockchain/blockchain"
-	"github.com/radiation-octopus/octopus-blockchain/oct"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/entity/genesis"
+	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
+	"github.com/radiation-octopus/octopus-blockchain/typedb"
 	"github.com/radiation-octopus/octopus/log"
 	"net/rpc"
 	"os"
@@ -23,13 +25,56 @@ var (
 
 func (node *Node) start() {
 	log.Info("node Starting")
-	makeFullNode()
+	makeFullNode(node)
 	log.Info("node 启动完成")
 	//New(oct)
 }
 
 func (node *Node) close() {
 
+}
+
+// OpenDatabaseWithFreezer从节点的数据目录中打开一个具有给定名称的现有数据库（如果找不到以前的名称，则创建一个），
+//并向其附加一个链冻结器，该链冻结器将已有的的链数据从数据库移动到不可变的仅附加文件。
+//如果节点是临时节点，则返回内存数据库。
+func (n *Node) OpenDatabaseWithFreezer(name string, cache, handles int, freezer, namespace string, readonly bool) (typedb.Database, error) {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+	if n.state == closedState {
+		return nil, ErrNodeStopped
+	}
+
+	var db typedb.Database
+	var err error
+	if n.config.DataDir == "" {
+		db = rawdb.NewMemoryDatabase()
+	} else {
+		root := n.ResolvePath(name)
+		switch {
+		case freezer == "":
+			freezer = filepath.Join(root, "ancient")
+		case !filepath.IsAbs(freezer):
+			freezer = n.ResolvePath(freezer)
+		}
+		db, err = rawdb.NewLevelDBDatabaseWithFreezer(root, cache, handles, freezer, namespace, readonly)
+	}
+
+	if err == nil {
+		db = n.wrapDatabase(db)
+	}
+	return db, err
+}
+
+// ResolvePath返回实例目录中资源的绝对路径。
+func (n *Node) ResolvePath(x string) string {
+	return n.config.ResolvePath(x)
+}
+
+// wrapDatabase确保在节点关闭时自动关闭数据库。
+func (n *Node) wrapDatabase(db typedb.Database) typedb.Database {
+	wrapper := &closeTrackingDB{db, n}
+	n.databases[wrapper] = struct{}{}
+	return wrapper
 }
 
 const (
@@ -162,6 +207,39 @@ type Config struct {
 	JWTSecret string `toml:",omitempty"`
 }
 
+//ResolvePath解析实例目录中的路径。
+func (c *Config) ResolvePath(path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	if c.DataDir == "" {
+		return ""
+	}
+	// 向后兼容性：确保使用geth 1.4创建的数据目录文件（如果存在）。
+	if warn, isOld := isOldGethResource[path]; isOld {
+		oldpath := ""
+		if c.name() == "geth" {
+			oldpath = filepath.Join(c.DataDir, path)
+		}
+		if oldpath != "" && entity.FileExist(oldpath) {
+			if warn {
+				c.warnOnce(&c.oldGethResourceWarning, "Using deprecated resource file %s, please move this file to the 'geth' subdirectory of datadir.", oldpath)
+			}
+			return oldpath
+		}
+	}
+	return filepath.Join(c.instanceDir(), path)
+}
+
+//对于“geth”实例，这些资源的解析方式不同。
+var isOldGethResource = map[string]bool{
+	"chaindata":          true,
+	"nodes":              true,
+	"nodekey":            true,
+	"static-nodes.json":  false, //没有警告，因为他们有
+	"trusted-nodes.json": false, // 拥有单独的警告。
+}
+
 func (c *Config) name() string {
 	if c.Name == "" {
 		progname := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
@@ -171,6 +249,13 @@ func (c *Config) name() string {
 		return progname
 	}
 	return c.Name
+}
+
+func (c *Config) instanceDir() string {
+	if c.DataDir == "" {
+		return ""
+	}
+	return filepath.Join(c.DataDir, c.name())
 }
 
 // KeyDirConfig确定keydirectory的设置
@@ -192,6 +277,23 @@ func (c *Config) KeyDirConfig() (string, error) {
 		keydir, err = filepath.Abs(c.KeyStoreDir)
 	}
 	return keydir, err
+}
+
+var warnLock sync.Mutex
+
+func (c *Config) warnOnce(w *bool, format string, args ...interface{}) {
+	warnLock.Lock()
+	defer warnLock.Unlock()
+
+	if *w {
+		return
+	}
+	//l := c.Logger
+	//if l == nil {
+	//	l = log.Root()
+	//}
+	//l.Warn(fmt.Sprintf(format, args...))
+	*w = true
 }
 
 // getKeyStoreDir检索密钥目录，并在必要时创建临时目录。
@@ -247,7 +349,7 @@ type Node struct {
 	//ipc           *ipcServer  // 存储有关ipc http服务器的信息
 	inprocHandler *rpc.Server // 用于处理API请求的进程内RPC请求处理程序
 
-	//databases map[*closeTrackingDB]struct{} // 所有打开的数据库
+	databases map[*closeTrackingDB]struct{} // 所有打开的数据库
 }
 
 // Start启动所有注册的生命周期、RPC服务和p2p网络。节点只能启动一次。
@@ -255,7 +357,7 @@ func (n *Node) Start() error {
 	n.startStopLock.Lock()
 	defer n.startStopLock.Unlock()
 
-	n.lock.Lock()
+	//n.lock.Lock()
 	switch n.state {
 	case runningState:
 		n.lock.Unlock()
@@ -264,7 +366,7 @@ func (n *Node) Start() error {
 		n.lock.Unlock()
 		return terr.ErrNodeStopped
 	}
-	n.state = runningState
+	//n.state = runningState
 	//打开网络和RPC端点
 	//err := n.openEndpoints()
 	//lifecycles := make([]Lifecycle, len(n.lifecycles))
@@ -315,18 +417,34 @@ func (n *Node) openDataDir() error {
 	return nil
 }
 
-func makeFullNode() (*Node, *oct.Octopus, error) {
+// closeTrackingDB包装数据库的Close方法。
+//当服务关闭数据库时，包装器会将其从节点的数据库映射中删除。
+//这确保了如果数据库被打开它的服务关闭，节点不会自动关闭数据库。
+type closeTrackingDB struct {
+	typedb.Database
+	n *Node
+}
+
+func (db *closeTrackingDB) Close() error {
+	db.n.lock.Lock()
+	delete(db.n.databases, db)
+	db.n.lock.Unlock()
+	return db.Database.Close()
+}
+
+func makeFullNode(node *Node) (*Node, error) {
 	//定义章鱼节点的基本配置
 	//datadir, _ := os.MkdirTemp("", "")
 
 	// 生成一批用于封存和资金的帐户
 	//faucets := make([]*ecdsa.PrivateKey, 16)
 	//genesis := makeGenesis(faucets)
-
+	//定义oct节点的基本配置
+	datadir := os.TempDir()
 	config := &Config{
 		Name: "geth",
 		//Version: params.Version,
-		//DataDir: datadir,
+		DataDir: datadir,
 		//P2P: p2p.Config{
 		//	ListenAddr:  "0.0.0.0:0",
 		//	NoDiscovery: true,
@@ -335,9 +453,9 @@ func makeFullNode() (*Node, *oct.Octopus, error) {
 		UseLightweightKDF: true,
 	}
 	// 创建节点并在其上配置完整的章鱼节点
-	stack, err := NewNodeCfg(config)
+	stack, err := NewNodeCfg(node, config)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	//econfig := &oct.Config{
@@ -361,18 +479,18 @@ func makeFullNode() (*Node, *oct.Octopus, error) {
 	//}
 	//ethBackend, err := oct.New(stack, econfig)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	//_, err = les.NewLesServer(stack, ethBackend, econfig)
 	if err != nil {
 		log.Info("Failed to create the LES server", "err", err)
 	}
 	err = stack.Start()
-	return stack, nil, err
+	return stack, err
 }
 
 // 新建创建一个新的P2P节点，为协议注册做好准备。
-func NewNodeCfg(conf *Config) (*Node, error) {
+func NewNodeCfg(node *Node, conf *Config) (*Node, error) {
 	// 复制config并解析datadir，以便将来对当前工作目录的更改不会影响节点。
 	confCopy := *conf
 	conf = &confCopy
@@ -398,15 +516,20 @@ func NewNodeCfg(conf *Config) (*Node, error) {
 		return nil, errors.New(`Config.Name cannot end in ".ipc"`)
 	}
 
-	node := &Node{
-		config:        conf,
-		inprocHandler: rpc.NewServer(),
-		//eventmux:      new(event.TypeMux),
-		log:  conf.Logger,
-		stop: make(chan struct{}),
-		//server:        &p2p.Server{Config: conf.P2P},
-		//databases:     make(map[*closeTrackingDB]struct{}),
-	}
+	node.config = conf
+	node.inprocHandler = rpc.NewServer()
+	node.log = conf.Logger
+	node.stop = make(chan struct{})
+	node.databases = make(map[*closeTrackingDB]struct{})
+	//node := &Node{
+	//	config:        conf,
+	//	inprocHandler: rpc.NewServer(),
+	//	//eventmux:      new(event.TypeMux),
+	//	log:  conf.Logger,
+	//	stop: make(chan struct{}),
+	//	//server:        &p2p.Server{Config: conf.P2P},
+	//	databases:     make(map[*closeTrackingDB]struct{}),
+	//}
 
 	// 注册内置API。
 	//node.rpcAPIs = append(node.rpcAPIs, node.apis()...)
@@ -471,10 +594,9 @@ func validatePrefix(what, path string) error {
 	return nil
 }
 
-// makeGenesis creates a custom Octell genesis block based on some pre-defined
-// faucet accounts.
-func makeGenesis(faucets []*ecdsa.PrivateKey) *blockchain.Genesis {
-	genesis := blockchain.DefaultRopstenGenesisBlock()
+// makeGenesis基于一些预定义的水龙头帐户创建自定义的八单元genesis块。
+func makeGenesis(faucets []*ecdsa.PrivateKey) *genesis.Genesis {
+	genesis := genesis.DefaultRopstenGenesisBlock()
 
 	return genesis
 }

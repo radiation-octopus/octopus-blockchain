@@ -4,10 +4,10 @@ import (
 	"crypto/ecdsa"
 	crand "crypto/rand"
 	"errors"
-	"github.com/radiation-octopus/octopus-blockchain/block"
-	"github.com/radiation-octopus/octopus-blockchain/blockchain"
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/event"
 	"math/big"
 	"path/filepath"
 	"reflect"
@@ -37,10 +37,10 @@ type KeyStore struct {
 	changes  chan struct{}                // 从缓存接收更改通知的通道
 	unlocked map[entity.Address]*unlocked // 当前解锁的帐户（解密的私钥）
 
-	wallets     []Wallet                     // 各个密钥文件周围的钱包包装
-	updateFeed  blockchain.Feed              // 通知钱包添加/删除的事件源
-	updateScope blockchain.SubscriptionScope // 订阅范围跟踪当前实时侦听器
-	updating    bool                         // 事件通知循环是否正在运行
+	wallets     []Wallet                // 各个密钥文件周围的钱包包装
+	updateFeed  event.Feed              // 通知钱包添加/删除的事件源
+	updateScope event.SubscriptionScope // 订阅范围跟踪当前实时侦听器
+	updating    bool                    // 事件通知循环是否正在运行
 
 	mu       sync.RWMutex
 	importMu sync.Mutex // 导入互斥锁锁定导入以防止两个插入发生冲突
@@ -176,7 +176,7 @@ func (ks *KeyStore) Find(a Account) (Account, error) {
 }
 
 // SignTx使用请求的帐户签署给定的交易。
-func (ks *KeyStore) SignTx(a Account, tx *block.Transaction, chainID *big.Int) (*block.Transaction, error) {
+func (ks *KeyStore) SignTx(a Account, tx *block2.Transaction, chainID *big.Int) (*block2.Transaction, error) {
 	// 查找要签名的密钥，如果找不到，则中止
 	ks.mu.RLock()
 	defer ks.mu.RUnlock()
@@ -186,20 +186,20 @@ func (ks *KeyStore) SignTx(a Account, tx *block.Transaction, chainID *big.Int) (
 		return nil, ErrLocked
 	}
 	// 根据链ID的存在，使用2718或homestead签名
-	signer := block.LatestSignerForChainID(chainID)
-	return block.SignTx(tx, signer, unlockedKey.PrivateKey)
+	signer := block2.LatestSignerForChainID(chainID)
+	return block2.SignTx(tx, signer, unlockedKey.PrivateKey)
 }
 
 // 如果与给定地址匹配的私钥可以用给定的密码短语解密，SignTxWithPassphrase将对事务进行签名。
-func (ks *KeyStore) SignTxWithPassphrase(a Account, passphrase string, tx *block.Transaction, chainID *big.Int) (*block.Transaction, error) {
+func (ks *KeyStore) SignTxWithPassphrase(a Account, passphrase string, tx *block2.Transaction, chainID *big.Int) (*block2.Transaction, error) {
 	_, key, err := ks.getDecryptedKey(a, passphrase)
 	if err != nil {
 		return nil, err
 	}
 	defer zeroKey(key.PrivateKey)
 	// 根据链ID的存在情况，使用或不使用重播保护进行签名。
-	signer := block.LatestSignerForChainID(chainID)
-	return block.SignTx(tx, signer, key.PrivateKey)
+	signer := block2.LatestSignerForChainID(chainID)
+	return block2.SignTx(tx, signer, key.PrivateKey)
 }
 
 // 钱包实现帐户。后端，从密钥库目录返回所有单钥匙钱包。
@@ -216,7 +216,7 @@ func (ks *KeyStore) Wallets() []Wallet {
 }
 
 //订阅实现帐户。后端，创建异步订阅以接收有关添加或删除密钥库钱包的通知。
-func (ks *KeyStore) Subscribe(sink chan<- WalletEvent) blockchain.Subscription {
+func (ks *KeyStore) Subscribe(sink chan<- WalletEvent) event.Subscription {
 	// 我们需要互斥体来可靠地启动/停止更新循环
 	ks.mu.Lock()
 	defer ks.mu.Unlock()

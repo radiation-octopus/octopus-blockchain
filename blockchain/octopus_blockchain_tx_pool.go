@@ -3,8 +3,10 @@ package blockchain
 import (
 	"container/heap"
 	"errors"
-	"github.com/radiation-octopus/octopus-blockchain/block"
+	"github.com/radiation-octopus/octopus-blockchain/blockchain/blockchainconfig"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/event"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
 	"github.com/radiation-octopus/octopus-blockchain/transition"
@@ -21,10 +23,10 @@ import (
 
 //区块链提供区块链的状态和当前气体限制，以便在tx池和事件订阅者中进行一些预检查。
 type blockChainop interface {
-	CurrentBlock() *block.Block
-	GetBlock(hash entity.Hash, number uint64) *block.Block
+	CurrentBlock() *block2.Block
+	GetBlock(hash entity.Hash, number uint64) *block2.Block
 	StateAt(root entity.Hash) (*operationdb.OperationDB, error)
-	SubscribeChainHeadEvent(ch chan<- ChainHeadEvent) Subscription
+	SubscribeChainHeadEvent(ch chan<- event.ChainHeadEvent) event.Subscription
 }
 
 const (
@@ -77,80 +79,17 @@ var (
 //reorgDurationTimer = metrics.NewRegisteredTimer("txpool/reorgtime", nil)
 )
 
-/*
-SubscriptionScope提供了一种功能，可以一次取消订阅多个订阅。
-对于处理多个订阅的代码，可以使用一个作用域通过单个调用方便地取消所有订阅。该示例演示了在大型程序中的典型用法。
-零值已准备好使用。
-*/
-type SubscriptionScope struct {
-	mu     sync.Mutex
-	subs   map[*scopeSub]struct{}
-	closed bool
-}
-
-//Close calls取消对所有跟踪订阅的订阅，并阻止进一步添加到跟踪集。关闭后跟踪的调用返回nil。
-func (sc *SubscriptionScope) Close() {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	if sc.closed {
-		return
-	}
-	sc.closed = true
-	for s := range sc.subs {
-		s.s.Unsubscribe()
-	}
-	sc.subs = nil
-}
-
-// Count返回跟踪的订阅数。它用于调试。
-func (sc *SubscriptionScope) Count() int {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return len(sc.subs)
-}
-
-type scopeSub struct {
-	sc *SubscriptionScope
-	s  Subscription
-}
-
-func (s *scopeSub) Err() <-chan error {
-	return s.s.Err()
-}
-
-func (s *scopeSub) Unsubscribe() {
-	s.s.Unsubscribe()
-	s.sc.mu.Lock()
-	defer s.sc.mu.Unlock()
-	delete(s.sc.subs, s)
-}
-
-// Track开始跟踪订阅。如果作用域已关闭，Track将返回nil。返回的订阅是包装。取消订阅包装将其从范围中删除。
-func (sc *SubscriptionScope) Track(s Subscription) Subscription {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	if sc.closed {
-		return nil
-	}
-	if sc.subs == nil {
-		sc.subs = make(map[*scopeSub]struct{})
-	}
-	ss := &scopeSub{sc, s}
-	sc.subs[ss] = struct{}{}
-	return ss
-}
-
 /**
 交易池定义
 */
 type TxPool struct {
-	config TxPoolConfig
+	config blockchainconfig.TxPoolConfig
 	//chainconfig *params.ChainConfig
 	chain    blockChainop
 	gasPrice *big.Int
-	txFeed   Feed
-	scope    SubscriptionScope
-	signer   block.Signer
+	txFeed   event.Feed
+	scope    event.SubscriptionScope
+	signer   block2.Signer
 	mu       sync.RWMutex
 
 	istanbul bool // Fork指示我们是否处于伊斯坦布尔阶段。
@@ -170,11 +109,11 @@ type TxPool struct {
 	all     *txLookup                    // 允许查找的所有事务
 	priced  *txPricedList                // 按价格排序的所有交易记录
 
-	chainHeadCh     chan ChainHeadEvent
-	chainHeadSub    Subscription
+	chainHeadCh     chan event.ChainHeadEvent
+	chainHeadSub    event.Subscription
 	reqResetCh      chan *txpoolResetRequest
 	reqPromoteCh    chan *accountSet
-	queueTxEventCh  chan *block.Transaction
+	queueTxEventCh  chan *block2.Transaction
 	reorgDoneCh     chan chan struct{}
 	reorgShutdownCh chan struct{}  // 请求关闭scheduleReorgLoop
 	wg              sync.WaitGroup // 轨道运行，scheduleReorgLoop
@@ -183,95 +122,25 @@ type TxPool struct {
 	changesSinceReorg int // 一个计数器，显示在reorg之间我们执行了多少次下降。
 }
 
-type TxPoolConfig struct {
-	Locals    []entity.Address // 默认情况下应视为本地的地址
-	NoLocals  bool             // 是否应禁用本地事务处理
-	Journal   string           // 节点重新启动后的本地事务日志
-	Rejournal time.Duration    // 重新生成本地事务日志的时间间隔
-
-	PriceLimit uint64 // 强制执行的最低gas价格，以便进入事务池
-	PriceBump  uint64 // 替换现有交易的最低涨价百分比（nonce）
-
-	AccountSlots uint64 // 每个帐户保证的可执行事务插槽数
-	GlobalSlots  uint64 // 所有帐户的最大可执行事务插槽数
-	AccountQueue uint64 // 每个帐户允许的最大不可执行事务槽数
-	GlobalQueue  uint64 // 所有帐户的最大不可执行事务插槽数
-
-	Lifetime time.Duration // 非可执行事务排队的最长时间
-}
-
-var DefaultTxPoolConfig = TxPoolConfig{
-	Journal:   "transactions.rlp",
-	Rejournal: time.Hour,
-
-	PriceLimit: 1,
-	PriceBump:  10,
-
-	AccountSlots: 16,
-	GlobalSlots:  4096 + 1024, // urgent + floating queue capacity with 4:1 ratio
-	AccountQueue: 64,
-	GlobalQueue:  1024,
-
-	Lifetime: 3 * time.Hour,
-}
-
-// sanitize检查提供的用户配置，并更改任何不合理或不可行的内容。
-func (config *TxPoolConfig) sanitize() TxPoolConfig {
-	conf := *config
-	if conf.Rejournal < time.Second {
-		log.Warn("Sanitizing invalid txpool journal time", "provided", conf.Rejournal, "updated", time.Second)
-		conf.Rejournal = time.Second
-	}
-	if conf.PriceLimit < 1 {
-		log.Warn("Sanitizing invalid txpool price limit", "provided", conf.PriceLimit, "updated", DefaultTxPoolConfig.PriceLimit)
-		conf.PriceLimit = DefaultTxPoolConfig.PriceLimit
-	}
-	if conf.PriceBump < 1 {
-		log.Warn("Sanitizing invalid txpool price bump", "provided", conf.PriceBump, "updated", DefaultTxPoolConfig.PriceBump)
-		conf.PriceBump = DefaultTxPoolConfig.PriceBump
-	}
-	if conf.AccountSlots < 1 {
-		log.Warn("Sanitizing invalid txpool account slots", "provided", conf.AccountSlots, "updated", DefaultTxPoolConfig.AccountSlots)
-		conf.AccountSlots = DefaultTxPoolConfig.AccountSlots
-	}
-	if conf.GlobalSlots < 1 {
-		log.Warn("Sanitizing invalid txpool global slots", "provided", conf.GlobalSlots, "updated", DefaultTxPoolConfig.GlobalSlots)
-		conf.GlobalSlots = DefaultTxPoolConfig.GlobalSlots
-	}
-	if conf.AccountQueue < 1 {
-		log.Warn("Sanitizing invalid txpool account queue", "provided", conf.AccountQueue, "updated", DefaultTxPoolConfig.AccountQueue)
-		conf.AccountQueue = DefaultTxPoolConfig.AccountQueue
-	}
-	if conf.GlobalQueue < 1 {
-		log.Warn("Sanitizing invalid txpool global queue", "provided", conf.GlobalQueue, "updated", DefaultTxPoolConfig.GlobalQueue)
-		conf.GlobalQueue = DefaultTxPoolConfig.GlobalQueue
-	}
-	if conf.Lifetime < 1 {
-		log.Warn("Sanitizing invalid txpool lifetime", "provided", conf.Lifetime, "updated", DefaultTxPoolConfig.Lifetime)
-		conf.Lifetime = DefaultTxPoolConfig.Lifetime
-	}
-	return conf
-}
-
 // NewTxPool创建一个新的事务池来收集、排序和过滤网络中的入站事务。
-func NewTxPool(config TxPoolConfig, chain blockChainop) *TxPool {
+func NewTxPool(config blockchainconfig.TxPoolConfig, chain blockChainop) *TxPool {
 	// 清理输入，确保未设定易受影响的gas价格
-	config = (&config).sanitize()
+	config = (&config).Sanitize()
 
 	// 使用事务池的初始设置创建事务池
 	pool := &TxPool{
 		config: config,
 		//chainconfig:     chainconfig,
 		chain:           chain,
-		signer:          block.LatestSigner(),
+		signer:          block2.LatestSigner(),
 		pending:         make(map[entity.Address]*txList),
 		queue:           make(map[entity.Address]*txList),
 		beats:           make(map[entity.Address]time.Time),
 		all:             newTxLookup(),
-		chainHeadCh:     make(chan ChainHeadEvent, chainHeadChanSize),
+		chainHeadCh:     make(chan event.ChainHeadEvent, chainHeadChanSize),
 		reqResetCh:      make(chan *txpoolResetRequest),
 		reqPromoteCh:    make(chan *accountSet),
-		queueTxEventCh:  make(chan *block.Transaction),
+		queueTxEventCh:  make(chan *block2.Transaction),
 		reorgDoneCh:     make(chan chan struct{}),
 		reorgShutdownCh: make(chan struct{}),
 		InitDoneCh:      make(chan struct{}),
@@ -312,16 +181,16 @@ func NewTxPool(config TxPoolConfig, chain blockChainop) *TxPool {
 // newTxLookup returns a new txLookup structure.
 func newTxLookup() *txLookup {
 	return &txLookup{
-		locals:  make(map[entity.Hash]*block.Transaction),
-		remotes: make(map[entity.Hash]*block.Transaction),
+		locals:  make(map[entity.Hash]*block2.Transaction),
+		remotes: make(map[entity.Hash]*block2.Transaction),
 	}
 }
 
-func (pool *TxPool) Pending(enforceTips bool) map[entity.Address]block.Transactions {
+func (pool *TxPool) Pending(enforceTips bool) map[entity.Address]block2.Transactions {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
-	pending := make(map[entity.Address]block.Transactions)
+	pending := make(map[entity.Address]block2.Transactions)
 	for addr, list := range pool.pending {
 		txs := list.Flatten()
 
@@ -350,7 +219,7 @@ func (pool *TxPool) Locals() []entity.Address {
 }
 
 // SubscribeNewTxsEvent注册NewTxsEvent的订阅，并开始向给定通道发送事件。
-func (pool *TxPool) SubscribeNewTxsEvent(ch chan<- NewTxsEvent) Subscription {
+func (pool *TxPool) SubscribeNewTxsEvent(ch chan<- event.NewTxsEvent) event.Subscription {
 	return pool.scope.Track(pool.txFeed.Subscribe(ch))
 }
 
@@ -403,7 +272,7 @@ func (pool *TxPool) scheduleReorgLoop() {
 
 		case tx := <-pool.queueTxEventCh:
 			// 将事件排队，但不要安排reorg。如果调用方希望发送事件，则由调用方稍后请求。
-			addr, _ := block.Sender(pool.signer, tx)
+			addr, _ := block2.Sender(pool.signer, tx)
 			if _, ok := queuedEvents[addr]; !ok {
 				queuedEvents[addr] = newTxSortedMap()
 			}
@@ -482,25 +351,25 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 
 	// 通知子系统新添加的事务
 	for _, tx := range promoted {
-		addr, _ := block.Sender(pool.signer, tx)
+		addr, _ := block2.Sender(pool.signer, tx)
 		if _, ok := events[addr]; !ok {
 			events[addr] = newTxSortedMap()
 		}
 		events[addr].Put(tx)
 	}
 	if len(events) > 0 {
-		var txs []*block.Transaction
+		var txs []*block2.Transaction
 		for _, set := range events {
 			txs = append(txs, set.Flatten()...)
 		}
-		pool.txFeed.Send(NewTxsEvent{txs})
+		pool.txFeed.Send(event.NewTxsEvent{txs})
 	}
 }
 
 // 重置检索区块链的当前状态，并确保交易池的内容相对于链状态有效。
-func (pool *TxPool) reset(oldHead, newHead *block.Header) {
+func (pool *TxPool) reset(oldHead, newHead *block2.Header) {
 	// 如果要重新调整旧状态，请重新注入所有丢弃的事务
-	var reinject block.Transactions
+	var reinject block2.Transactions
 
 	if oldHead != nil && oldHead.Hash() != newHead.ParentHash {
 		//如果reorg太深，请避免这样做（将在快速同步期间发生）
@@ -511,7 +380,7 @@ func (pool *TxPool) reset(oldHead, newHead *block.Header) {
 			log.Debug("Skipping deep transaction reorg", "depth", depth)
 		} else {
 			// Reorg看起来很浅，足以将所有事务都拉入内存
-			var discarded, included block.Transactions
+			var discarded, included block2.Transactions
 			var (
 				rem = pool.chain.GetBlock(oldHead.Hash(), oldHead.Number.Uint64())
 				add = pool.chain.GetBlock(newHead.Hash(), newHead.Number.Uint64())
@@ -555,7 +424,7 @@ func (pool *TxPool) reset(oldHead, newHead *block.Header) {
 						return
 					}
 				}
-				reinject = block.TxDifference(discarded, included)
+				reinject = block2.TxDifference(discarded, included)
 			}
 		}
 	}
@@ -589,7 +458,7 @@ func (pool *TxPool) reset(oldHead, newHead *block.Header) {
 // add验证事务并将其插入到不可执行队列中，以便稍后挂起升级和执行。
 //如果事务是已挂起或排队的事务的替换，则如果其价格较高，则会覆盖以前的事务。
 //如果新添加的交易标记为本地，则其发送帐户将添加到许可列表中，以防止任何关联交易因定价限制而从池中退出。
-func (pool *TxPool) add(tx *block.Transaction, local bool) (replaced bool, err error) {
+func (pool *TxPool) add(tx *block2.Transaction, local bool) (replaced bool, err error) {
 	// 如果事务已知，则放弃它
 	hash := tx.Hash()
 	if pool.all.Get(hash) != nil {
@@ -640,7 +509,7 @@ func (pool *TxPool) add(tx *block.Transaction, local bool) (replaced bool, err e
 		}
 	}
 	// 尝试替换挂起池中的现有事务
-	from, _ := block.Sender(pool.signer, tx) // 已验证
+	from, _ := block2.Sender(pool.signer, tx) // 已验证
 	if list := pool.pending[from]; list != nil && list.Overlaps(tx) {
 		// 暂挂，检查是否满足所需的涨价要求
 		inserted, old := list.Add(tx, pool.config.PriceBump)
@@ -713,9 +582,9 @@ func (pool *TxPool) SetGasPrice(price *big.Int) {
 }
 
 // promoteExecutables将可处理的事务从未来队列移动到挂起的事务集。在此过程中，将删除所有无效事务（低nonce、低余额）。
-func (pool *TxPool) promoteExecutables(accounts []entity.Address) []*block.Transaction {
+func (pool *TxPool) promoteExecutables(accounts []entity.Address) []*block2.Transaction {
 	// 跟踪提升的事务以立即广播它们
-	var promoted []*block.Transaction
+	var promoted []*block2.Transaction
 
 	// 迭代所有帐户并升级任何可执行事务
 	for _, addr := range accounts {
@@ -751,7 +620,7 @@ func (pool *TxPool) promoteExecutables(accounts []entity.Address) []*block.Trans
 		//queuedGauge.Dec(int64(len(readies)))
 
 		// 删除超过允许限制的所有事务
-		var caps block.Transactions
+		var caps block2.Transactions
 		if !pool.locals.contains(addr) {
 			caps = list.Cap(int(pool.config.AccountQueue))
 			for _, tx := range caps {
@@ -778,7 +647,7 @@ func (pool *TxPool) promoteExecutables(accounts []entity.Address) []*block.Trans
 
 // promoteTx将一个事务添加到待处理（可处理）事务列表中，并返回是否插入了该事务或旧事务更好。
 //注意，此方法假定池锁定已保持！
-func (pool *TxPool) promoteTx(addr entity.Address, hash entity.Hash, tx *block.Transaction) bool {
+func (pool *TxPool) promoteTx(addr entity.Address, hash entity.Hash, tx *block2.Transaction) bool {
 	// 尝试将事务插入挂起队列
 	if pool.pending[addr] == nil {
 		pool.pending[addr] = newTxList(true)
@@ -867,9 +736,9 @@ func (pool *TxPool) demoteUnexecutables() {
 
 //enqueueTx将新事务插入不可执行事务队列。
 //注意，此方法假定池锁定已保持！
-func (pool *TxPool) enqueueTx(hash entity.Hash, tx *block.Transaction, local bool, addAll bool) (bool, error) {
+func (pool *TxPool) enqueueTx(hash entity.Hash, tx *block2.Transaction, local bool, addAll bool) (bool, error) {
 	// 尝试将事务插入未来队列
-	from, _ := block.Sender(pool.signer, tx) // 已验证
+	from, _ := block2.Sender(pool.signer, tx) // 已验证
 	if pool.queue[from] == nil {
 		pool.queue[from] = newTxList(false)
 	}
@@ -1040,7 +909,7 @@ func (pool *TxPool) removeTx(hash entity.Hash, outofbound bool) {
 	if tx == nil {
 		return
 	}
-	addr, _ := block.Sender(pool.signer, tx) // 插入期间已验证
+	addr, _ := block2.Sender(pool.signer, tx) // 插入期间已验证
 
 	// 将其从已知事务列表中删除
 	pool.all.Remove(hash)
@@ -1084,36 +953,36 @@ func (pool *TxPool) removeTx(hash entity.Hash, outofbound bool) {
 
 // AddRemote将单个事务排队到池中（如果该事务有效）。
 //这是一个围绕AddRemotes的方便包装器。不推荐使用：使用AddRemotes
-func (pool *TxPool) AddRemote(tx *block.Transaction) error {
-	errs := pool.AddRemotes([]*block.Transaction{tx})
+func (pool *TxPool) AddRemote(tx *block2.Transaction) error {
+	errs := pool.AddRemotes([]*block2.Transaction{tx})
 	return errs[0]
 }
 
 // AddRemotes将一批有效的事务排入池中。
 //如果发件人不在本地跟踪的发件人中，则将应用完整的定价约束。
 //此方法用于从p2p网络添加事务，不等待池重组和内部事件传播。
-func (pool *TxPool) AddRemotes(txs []*block.Transaction) []error {
+func (pool *TxPool) AddRemotes(txs []*block2.Transaction) []error {
 	return pool.addTxs(txs, false, false)
 }
 
 // AddLocals将一批有效的事务排入池中，将发件人标记为本地发件人，确保他们绕过本地定价限制。
 //此方法用于从RPC API添加事务，并执行同步池重组和事件传播。
-func (pool *TxPool) AddLocals(txs []*block.Transaction) []error {
+func (pool *TxPool) AddLocals(txs []*block2.Transaction) []error {
 	return pool.addTxs(txs, !pool.config.NoLocals, true)
 }
 
 // AddLocal将单个本地事务排入池（如果有效）。这是一个围绕AddLocals的方便包装器。
-func (pool *TxPool) AddLocal(tx *block.Transaction) error {
-	errs := pool.AddLocals([]*block.Transaction{tx})
+func (pool *TxPool) AddLocal(tx *block2.Transaction) error {
+	errs := pool.AddLocals([]*block2.Transaction{tx})
 	return errs[0]
 }
 
 // addTxs尝试将一批有效的事务排队。
-func (pool *TxPool) addTxs(txs []*block.Transaction, local, sync bool) []error {
+func (pool *TxPool) addTxs(txs []*block2.Transaction, local, sync bool) []error {
 	// 在不获取池锁或恢复签名的情况下筛选出已知的池
 	var (
 		errs = make([]error, len(txs))
-		news = make([]*block.Transaction, 0, len(txs))
+		news = make([]*block2.Transaction, 0, len(txs))
 	)
 	for i, tx := range txs {
 		// 如果已知事务，请预先设置错误槽
@@ -1123,7 +992,7 @@ func (pool *TxPool) addTxs(txs []*block.Transaction, local, sync bool) []error {
 			continue
 		}
 		// 尽快排除具有无效签名的事务，并在获取锁之前在事务中缓存发件人
-		_, err := block.Sender(pool.signer, tx)
+		_, err := block2.Sender(pool.signer, tx)
 		if err != nil {
 			errs[i] = ErrInvalidSender
 			//invalidTxMeter.Mark(1)
@@ -1170,7 +1039,7 @@ func SetNonce(pool *TxPool, addr entity.Address, nonce uint64) {
 }
 
 //addTxsLocked尝试将一批有效的事务排队。必须持有事务池锁。
-func (pool *TxPool) addTxsLocked(txs []*block.Transaction, local bool) ([]error, *accountSet) {
+func (pool *TxPool) addTxsLocked(txs []*block2.Transaction, local bool) ([]error, *accountSet) {
 	dirty := newAccountSet(pool.signer)
 	errs := make([]error, len(txs))
 	for i, tx := range txs {
@@ -1185,13 +1054,13 @@ func (pool *TxPool) addTxsLocked(txs []*block.Transaction, local bool) ([]error,
 }
 
 // validateTx根据一致性规则检查事务是否有效，并遵守本地节点的一些启发式限制（价格和大小）。
-func (pool *TxPool) validateTx(tx *block.Transaction, local bool) error {
+func (pool *TxPool) validateTx(tx *block2.Transaction, local bool) error {
 	//在EIP-2718/2930激活之前，仅接受旧事务。
-	if !pool.eip2718 && tx.Type() != block.LegacyTxType {
+	if !pool.eip2718 && tx.Type() != block2.LegacyTxType {
 		return terr.ErrTxTypeNotSupported
 	}
 	//拒绝动态费用交易，直到EIP-1559激活。
-	if !pool.eip1559 && tx.Type() == block.DynamicFeeTxType {
+	if !pool.eip1559 && tx.Type() == block2.DynamicFeeTxType {
 		return terr.ErrTxTypeNotSupported
 	}
 	// 拒绝超过定义大小的事务以防止DOS攻击
@@ -1218,7 +1087,7 @@ func (pool *TxPool) validateTx(tx *block.Transaction, local bool) error {
 		return terr.ErrTipAboveFeeCap
 	}
 	// 确保交易签名正确。
-	from, err := block.Sender(pool.signer, tx)
+	from, err := block2.Sender(pool.signer, tx)
 	if err != nil {
 		return ErrInvalidSender
 	}
@@ -1246,7 +1115,7 @@ func (pool *TxPool) validateTx(tx *block.Transaction, local bool) error {
 }
 
 // journalTx将指定的事务添加到本地磁盘日志中，如果它被视为是从本地帐户发送的。
-func (pool *TxPool) journalTx(from entity.Address, tx *block.Transaction) {
+func (pool *TxPool) journalTx(from entity.Address, tx *block2.Transaction) {
 	// 仅当日志已启用且事务为本地事务时
 	//if pool.journal == nil || !pool.locals.contains(from) {
 	//	return
@@ -1257,7 +1126,7 @@ func (pool *TxPool) journalTx(from entity.Address, tx *block.Transaction) {
 }
 
 // queueTxEvent将要在下一次reorg运行中发送的事务事件排入队列。
-func (pool *TxPool) queueTxEvent(tx *block.Transaction) {
+func (pool *TxPool) queueTxEvent(tx *block2.Transaction) {
 	select {
 	case pool.queueTxEventCh <- tx:
 	case <-pool.reorgShutdownCh:
@@ -1343,7 +1212,7 @@ func (pool *TxPool) loop() {
 }
 
 //requestReset请求将池重置为新的头块。重置发生时，返回的通道关闭。
-func (pool *TxPool) requestReset(oldHead *block.Header, newHead *block.Header) chan struct{} {
+func (pool *TxPool) requestReset(oldHead *block2.Header, newHead *block2.Header) chan struct{} {
 	select {
 	case pool.reqResetCh <- &txpoolResetRequest{oldHead, newHead}:
 		return <-pool.reorgDoneCh
@@ -1401,7 +1270,7 @@ type addressByHeartbeat struct {
 }
 
 type txpoolResetRequest struct {
-	oldHead, newHead *block.Header
+	oldHead, newHead *block2.Header
 }
 
 type addressesByHeartbeat []addressByHeartbeat
@@ -1413,7 +1282,7 @@ func (a addressesByHeartbeat) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 //accountSet只是一组用于检查是否存在的地址，以及能够从事务中派生地址的签名者。
 type accountSet struct {
 	accounts map[entity.Address]struct{}
-	signer   block.Signer
+	signer   block2.Signer
 	cache    *[]entity.Address
 }
 
@@ -1444,8 +1313,8 @@ func (as *accountSet) contains(addr entity.Address) bool {
 }
 
 //containsTx检查给定tx的发送方是否在集合内。如果无法派生发件人，此方法将返回false。
-func (as *accountSet) containsTx(tx *block.Transaction) bool {
-	if addr, err := block.Sender(as.signer, tx); err == nil {
+func (as *accountSet) containsTx(tx *block2.Transaction) bool {
+	if addr, err := block2.Sender(as.signer, tx); err == nil {
 		return as.contains(addr)
 	}
 	return false
@@ -1458,14 +1327,14 @@ func (as *accountSet) add(addr entity.Address) {
 }
 
 //addTx将tx的发送方添加到集合中。
-func (as *accountSet) addTx(tx *block.Transaction) {
-	if addr, err := block.Sender(as.signer, tx); err == nil {
+func (as *accountSet) addTx(tx *block2.Transaction) {
+	if addr, err := block2.Sender(as.signer, tx); err == nil {
 		as.add(addr)
 	}
 }
 
 // newAccountSet为发件人派生创建一个新的地址集，该地址集具有关联的签名者。
-func newAccountSet(signer block.Signer, addrs ...entity.Address) *accountSet {
+func newAccountSet(signer block2.Signer, addrs ...entity.Address) *accountSet {
 	as := &accountSet{
 		accounts: make(map[entity.Address]struct{}),
 		signer:   signer,
@@ -1556,18 +1425,18 @@ func newTxList(strict bool) *txList {
 }
 
 // 扁平化基于松散排序的内部表示创建事务的nonce排序切片。如果在对内容进行任何修改之前再次请求排序，则会缓存排序结果。
-func (l *txList) Flatten() block.Transactions {
+func (l *txList) Flatten() block2.Transactions {
 	return l.txs.Flatten()
 }
 
 //Forward从列表中删除nonce低于所提供阈值的所有事务。每个删除的事务都会返回以进行任何删除后维护。
-func (l *txList) Forward(threshold uint64) block.Transactions {
+func (l *txList) Forward(threshold uint64) block2.Transactions {
 	return l.txs.Forward(threshold)
 }
 
 // 筛选器从列表中删除成本或气体限额高于所提供阈值的所有交易记录。每个删除的事务都会返回以进行任何删除后维护。还将返回严格模式无效的事务。
 //该方法使用缓存的costcap和gascap快速确定计算所有成本是否有意义，或者余额是否涵盖所有成本。如果阈值低于costgas上限，则在删除新失效的交易后，上限将重置为新的高点。
-func (l *txList) Filter(costLimit *big.Int, gasLimit uint64) (block.Transactions, block.Transactions) {
+func (l *txList) Filter(costLimit *big.Int, gasLimit uint64) (block2.Transactions, block2.Transactions) {
 	// 如果所有事务都低于阈值，则短路
 	if l.costcap.Cmp(costLimit) <= 0 && l.gascap <= gasLimit {
 		return nil, nil
@@ -1576,14 +1445,14 @@ func (l *txList) Filter(costLimit *big.Int, gasLimit uint64) (block.Transactions
 	l.gascap = gasLimit
 
 	// 过滤掉账户资金上方的所有交易
-	removed := l.txs.Filter(func(tx *block.Transaction) bool {
+	removed := l.txs.Filter(func(tx *block2.Transaction) bool {
 		return tx.Gas() > gasLimit || tx.Cost().Cmp(costLimit) > 0
 	})
 
 	if len(removed) == 0 {
 		return nil, nil
 	}
-	var invalids block.Transactions
+	var invalids block2.Transactions
 	// 如果列表是严格的，请过滤高于最低nonce的任何内容
 	if l.strict {
 		lowest := uint64(math.MaxUint64)
@@ -1592,7 +1461,7 @@ func (l *txList) Filter(costLimit *big.Int, gasLimit uint64) (block.Transactions
 				lowest = nonce
 			}
 		}
-		invalids = l.txs.filter(func(tx *block.Transaction) bool { return tx.Nonce() > lowest })
+		invalids = l.txs.filter(func(tx *block2.Transaction) bool { return tx.Nonce() > lowest })
 	}
 	l.txs.reheap()
 	return removed, invalids
@@ -1600,13 +1469,13 @@ func (l *txList) Filter(costLimit *big.Int, gasLimit uint64) (block.Transactions
 
 // Ready检索从提供的nonce开始的、可供处理的事务的顺序递增列表。返回的事务将从列表中删除。
 //注意，还将返回nonce低于start的所有事务，以防止进入无效状态。这不是应该发生的事情，但自我纠正比失败要好！
-func (l *txList) Ready(start uint64) block.Transactions {
+func (l *txList) Ready(start uint64) block2.Transactions {
 	return l.txs.Ready(start)
 }
 
 //Add尝试在列表中插入一个新事务，返回该事务是否已被接受，如果是，则返回它所替换的任何以前的事务。
 //如果新交易被列入清单，清单的成本和天然气阈值也可能会更新。
-func (l *txList) Add(tx *block.Transaction, priceBump uint64) (bool, *block.Transaction) {
+func (l *txList) Add(tx *block2.Transaction, priceBump uint64) (bool, *block2.Transaction) {
 	// 如果有旧的更好的事务，请中止
 	old := l.txs.Get(tx.Nonce())
 	if old != nil {
@@ -1640,7 +1509,7 @@ func (l *txList) Add(tx *block.Transaction, priceBump uint64) (bool, *block.Tran
 }
 
 // Cap对项目数量进行了严格限制，返回所有超过该限制的交易。
-func (l *txList) Cap(threshold int) block.Transactions {
+func (l *txList) Cap(threshold int) block2.Transactions {
 	return l.txs.Cap(threshold)
 }
 
@@ -1655,12 +1524,12 @@ func (l *txList) Len() int {
 }
 
 // LastElement返回平坦列表的最后一个元素，因此，具有最高nonce的事务
-func (l *txList) LastElement() *block.Transaction {
+func (l *txList) LastElement() *block2.Transaction {
 	return l.txs.LastElement()
 }
 
 // Remove从维护的列表中删除事务，返回是否找到该事务，并返回由于删除而无效的任何事务（仅限严格模式）。
-func (l *txList) Remove(tx *block.Transaction) (bool, block.Transactions) {
+func (l *txList) Remove(tx *block2.Transaction) (bool, block2.Transactions) {
 	// Remove the transaction from the set
 	nonce := tx.Nonce()
 	if removed := l.txs.Remove(nonce); !removed {
@@ -1668,13 +1537,13 @@ func (l *txList) Remove(tx *block.Transaction) (bool, block.Transactions) {
 	}
 	// In strict mode, filter out non-executable transactions
 	if l.strict {
-		return true, l.txs.Filter(func(tx *block.Transaction) bool { return tx.Nonce() > nonce })
+		return true, l.txs.Filter(func(tx *block2.Transaction) bool { return tx.Nonce() > nonce })
 	}
 	return true, nil
 }
 
 //重叠返回指定的事务是否与列表中已包含的事务具有相同的nonce。
-func (l *txList) Overlaps(tx *block.Transaction) bool {
+func (l *txList) Overlaps(tx *block2.Transaction) bool {
 	return l.txs.Get(tx.Nonce()) != nil
 }
 
@@ -1689,24 +1558,24 @@ func newTxPricedList(all *txLookup) *txPricedList {
 txSortedMap是一个nonce->事务哈希映射，具有基于堆的索引，允许以nonce递增的方式迭代内容。
 */
 type txSortedMap struct {
-	items map[uint64]*block.Transaction // 存储事务数据的哈希映射
-	index *nonceHeap                    // 所有存储事务的nonce堆（非严格模式）
-	cache block.Transactions            // 已排序事务的缓存
+	items map[uint64]*block2.Transaction // 存储事务数据的哈希映射
+	index *nonceHeap                     // 所有存储事务的nonce堆（非严格模式）
+	cache block2.Transactions            // 已排序事务的缓存
 }
 
 //newTxSortedMap创建一个新的nonce排序事务映射。
 func newTxSortedMap() *txSortedMap {
 	return &txSortedMap{
-		items: make(map[uint64]*block.Transaction),
+		items: make(map[uint64]*block2.Transaction),
 		index: new(nonceHeap),
 	}
 }
 
 // 扁平化基于松散排序的内部表示创建事务的nonce排序切片。如果在对内容进行任何修改之前再次请求排序，则会缓存排序结果。
-func (m *txSortedMap) Flatten() block.Transactions {
+func (m *txSortedMap) Flatten() block2.Transactions {
 	// 复制缓存以防止意外修改
 	cache := m.flatten()
-	txs := make(block.Transactions, len(cache))
+	txs := make(block2.Transactions, len(cache))
 	copy(txs, cache)
 	return txs
 }
@@ -1717,12 +1586,12 @@ func (m *txSortedMap) Len() int {
 }
 
 // Get检索与给定nonce关联的当前事务。
-func (m *txSortedMap) Get(nonce uint64) *block.Transaction {
+func (m *txSortedMap) Get(nonce uint64) *block2.Transaction {
 	return m.items[nonce]
 }
 
 // Put在映射中插入新事务，同时更新映射的nonce索引。如果已存在具有相同nonce的事务，则会覆盖该事务。
-func (m *txSortedMap) Put(tx *block.Transaction) {
+func (m *txSortedMap) Put(tx *block2.Transaction) {
 	nonce := tx.Nonce()
 	if m.items[nonce] == nil {
 		heap.Push(m.index, nonce)
@@ -1730,21 +1599,21 @@ func (m *txSortedMap) Put(tx *block.Transaction) {
 	m.items[nonce], m.cache = tx, nil
 }
 
-func (m *txSortedMap) flatten() block.Transactions {
+func (m *txSortedMap) flatten() block2.Transactions {
 	// If the sorting was not cached yet, create and cache it
 	if m.cache == nil {
-		m.cache = make(block.Transactions, 0, len(m.items))
+		m.cache = make(block2.Transactions, 0, len(m.items))
 		for _, tx := range m.items {
 			m.cache = append(m.cache, tx)
 		}
-		sort.Sort(block.TxByNonce(m.cache))
+		sort.Sort(block2.TxByNonce(m.cache))
 	}
 	return m.cache
 }
 
 // Forward从映射中删除nonce低于所提供阈值的所有事务。每个删除的事务都会返回以进行任何删除后维护。
-func (m *txSortedMap) Forward(threshold uint64) block.Transactions {
-	var removed block.Transactions
+func (m *txSortedMap) Forward(threshold uint64) block2.Transactions {
+	var removed block2.Transactions
 
 	// 弹出堆项目，直到达到阈值
 	for m.index.Len() > 0 && (*m.index)[0] < threshold {
@@ -1762,7 +1631,7 @@ func (m *txSortedMap) Forward(threshold uint64) block.Transactions {
 // 筛选器迭代事务列表，并删除指定函数计算结果为true的所有事务。
 //与“Filter”相反，Filter在操作完成后重新初始化堆。
 //如果您想连续进行几次过滤，那么最好先进行一次。过滤器（func1）后跟。过滤器（func2）或reheap（）
-func (m *txSortedMap) Filter(filter func(*block.Transaction) bool) block.Transactions {
+func (m *txSortedMap) Filter(filter func(*block2.Transaction) bool) block2.Transactions {
 	removed := m.filter(filter)
 	// 如果事务被删除，堆和缓存将被破坏
 	if len(removed) > 0 {
@@ -1772,8 +1641,8 @@ func (m *txSortedMap) Filter(filter func(*block.Transaction) bool) block.Transac
 }
 
 //筛选器与筛选器相同，但**不**重新生成堆。只有在紧接着调用Filter或reheap（）时，才应使用此方法
-func (m *txSortedMap) filter(filter func(*block.Transaction) bool) block.Transactions {
-	var removed block.Transactions
+func (m *txSortedMap) filter(filter func(*block2.Transaction) bool) block2.Transactions {
+	var removed block2.Transactions
 
 	// Collect all the transactions to filter out
 	for nonce, tx := range m.items {
@@ -1799,13 +1668,13 @@ func (m *txSortedMap) reheap() {
 
 //Ready检索从提供的nonce开始的、可供处理的事务的顺序递增列表。返回的事务将从列表中删除。
 //注意，还将返回nonce低于start的所有事务，以防止进入无效状态。这不是应该发生的事情，但自我纠正比失败要好！
-func (m *txSortedMap) Ready(start uint64) block.Transactions {
+func (m *txSortedMap) Ready(start uint64) block2.Transactions {
 	// 如果没有可用的事务，则短路
 	if m.index.Len() == 0 || (*m.index)[0] > start {
 		return nil
 	}
 	// 否则，开始累积增量事务
-	var ready block.Transactions
+	var ready block2.Transactions
 	for next := (*m.index)[0]; m.index.Len() > 0 && (*m.index)[0] == next; next++ {
 		ready = append(ready, m.items[next])
 		delete(m.items, next)
@@ -1817,13 +1686,13 @@ func (m *txSortedMap) Ready(start uint64) block.Transactions {
 }
 
 //Cap对项目数量进行了严格限制，返回所有超过该限制的交易。
-func (m *txSortedMap) Cap(threshold int) block.Transactions {
+func (m *txSortedMap) Cap(threshold int) block2.Transactions {
 	// 如果项目数量低于限制，则短路
 	if len(m.items) <= threshold {
 		return nil
 	}
 	// 否则，收集和删除最高的nonced事务
-	var drops block.Transactions
+	var drops block2.Transactions
 
 	sort.Sort(*m.index)
 	for size := len(m.items); size > threshold; size-- {
@@ -1841,7 +1710,7 @@ func (m *txSortedMap) Cap(threshold int) block.Transactions {
 }
 
 // LastElement返回平坦列表的最后一个元素，因此，具有最高nonce的事务
-func (m *txSortedMap) LastElement() *block.Transaction {
+func (m *txSortedMap) LastElement() *block2.Transaction {
 	cache := m.flatten()
 	return cache[len(cache)-1]
 }
@@ -1891,8 +1760,8 @@ txLookup循环跟踪事务
 type txLookup struct {
 	slots   int
 	lock    sync.RWMutex
-	locals  map[entity.Hash]*block.Transaction
-	remotes map[entity.Hash]*block.Transaction
+	locals  map[entity.Hash]*block2.Transaction
+	remotes map[entity.Hash]*block2.Transaction
 }
 
 //删除从查找中删除事务。
@@ -1924,7 +1793,7 @@ func (t *txLookup) RemoteCount() int {
 }
 
 // Range对映射中存在的每个键和值调用f。传递的回调应该返回是否需要继续迭代的指示符。调用方需要指定要迭代的集合（或两者）。
-func (t *txLookup) Range(f func(hash entity.Hash, tx *block.Transaction, local bool) bool, local bool, remote bool) {
+func (t *txLookup) Range(f func(hash entity.Hash, tx *block2.Transaction, local bool) bool, local bool, remote bool) {
 	t.lock.RLock()
 	defer t.lock.RUnlock()
 
@@ -1945,7 +1814,7 @@ func (t *txLookup) Range(f func(hash entity.Hash, tx *block.Transaction, local b
 }
 
 // 添加将事务添加到查找中。
-func (t *txLookup) Add(tx *block.Transaction, local bool) {
+func (t *txLookup) Add(tx *block2.Transaction, local bool) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
@@ -1960,7 +1829,7 @@ func (t *txLookup) Add(tx *block.Transaction, local bool) {
 }
 
 // Get如果在查找中存在事务，则返回事务；如果未找到事务，则返回nil。
-func (t *txLookup) Get(hash entity.Hash) *block.Transaction {
+func (t *txLookup) Get(hash entity.Hash) *block2.Transaction {
 	t.lock.RLock()
 	defer t.lock.RUnlock()
 
@@ -1979,7 +1848,7 @@ func (t *txLookup) Slots() int {
 }
 
 //GetRemote如果在查找中存在事务，则返回事务；如果未找到事务，则返回nil。
-func (t *txLookup) GetRemote(hash entity.Hash) *block.Transaction {
+func (t *txLookup) GetRemote(hash entity.Hash) *block2.Transaction {
 	t.lock.RLock()
 	defer t.lock.RUnlock()
 
@@ -2003,9 +1872,9 @@ func (t *txLookup) RemoteToLocals(locals *accountSet) int {
 }
 
 // RemotesBelowTip查找低于给定tip阈值的所有远程事务。
-func (t *txLookup) RemotesBelowTip(threshold *big.Int) block.Transactions {
-	found := make(block.Transactions, 0, 128)
-	t.Range(func(hash entity.Hash, tx *block.Transaction, local bool) bool {
+func (t *txLookup) RemotesBelowTip(threshold *big.Int) block2.Transactions {
+	found := make(block2.Transactions, 0, 128)
+	t.Range(func(hash entity.Hash, tx *block2.Transaction, local bool) bool {
 		if tx.GasTipCapIntCmp(threshold) < 0 {
 			found = append(found, tx)
 		}
@@ -2015,7 +1884,7 @@ func (t *txLookup) RemotesBelowTip(threshold *big.Int) block.Transactions {
 }
 
 // numSlots计算单个事务所需的插槽数。
-func numSlots(tx *block.Transaction) int {
+func numSlots(tx *block2.Transaction) int {
 	return int((tx.Size() + txSlotSize - 1) / txSlotSize)
 }
 
@@ -2050,8 +1919,8 @@ func (l *txPricedList) Reheap() {
 	defer l.reheapMu.Unlock()
 	//start := time.Now()
 	atomic.StoreInt64(&l.stales, 0)
-	l.urgent.list = make([]*block.Transaction, 0, l.all.RemoteCount())
-	l.all.Range(func(hash entity.Hash, tx *block.Transaction, local bool) bool {
+	l.urgent.list = make([]*block2.Transaction, 0, l.all.RemoteCount())
+	l.all.Range(func(hash entity.Hash, tx *block2.Transaction, local bool) bool {
 		l.urgent.list = append(l.urgent.list, tx)
 		return true
 	}, false, true) // 仅迭代远程
@@ -2060,16 +1929,16 @@ func (l *txPricedList) Reheap() {
 	// 只有通过将最差的一半事务移动到浮动堆中，才能迭代remotesbalance以消除这两个堆注意：
 	//Discard在第一次逐出之前也会这样做，但Reheap可以更有效地做到这一点。此外，如果浮动队列是空的，那么第一次定价过低的情况将不太理想。
 	floatingCount := len(l.urgent.list) * floatingRatio / (urgentRatio + floatingRatio)
-	l.floating.list = make([]*block.Transaction, floatingCount)
+	l.floating.list = make([]*block2.Transaction, floatingCount)
 	for i := 0; i < floatingCount; i++ {
-		l.floating.list[i] = heap.Pop(&l.urgent).(*block.Transaction)
+		l.floating.list[i] = heap.Pop(&l.urgent).(*block2.Transaction)
 	}
 	heap.Init(&l.floating)
 	//reheapTimer.Update(time.Since(start))
 }
 
 // Put在堆中插入一个新事务。
-func (l *txPricedList) Put(tx *block.Transaction, local bool) {
+func (l *txPricedList) Put(tx *block2.Transaction, local bool) {
 	if local {
 		return
 	}
@@ -2078,7 +1947,7 @@ func (l *txPricedList) Put(tx *block.Transaction, local bool) {
 }
 
 // 低价检查交易是否比当前跟踪的最低价（远程）交易便宜（或与之一样便宜）。
-func (l *txPricedList) Underpriced(tx *block.Transaction) bool {
+func (l *txPricedList) Underpriced(tx *block2.Transaction) bool {
 	// 注意：对于两个队列，定价过低被定义为比所有非空队列中最差的项目（如果有）更差。如果两个队列都是空的，那么任何东西都不会被低估。
 	return (l.underpricedFor(&l.urgent, tx) || len(l.urgent.list) == 0) &&
 		(l.underpricedFor(&l.floating, tx) || len(l.floating.list) == 0) &&
@@ -2086,7 +1955,7 @@ func (l *txPricedList) Underpriced(tx *block.Transaction) bool {
 }
 
 //UnpricedFor检查事务是否比给定堆中价格最低的（远程）事务便宜（或与之一样便宜）。
-func (l *txPricedList) underpricedFor(h *priceHeap, tx *block.Transaction) bool {
+func (l *txPricedList) underpricedFor(h *priceHeap, tx *block2.Transaction) bool {
 	// 如果在堆开始处找到过时的价格点，则丢弃该价格点
 	for len(h.list) > 0 {
 		head := h.list[0]
@@ -2108,12 +1977,12 @@ func (l *txPricedList) underpricedFor(h *priceHeap, tx *block.Transaction) bool 
 
 //iscard查找许多定价过低的交易，将其从定价列表中删除，并返回这些交易，以便从整个池中进一步删除。
 //注：本地交易不会被视为逐出。
-func (l *txPricedList) Discard(slots int, force bool) (block.Transactions, bool) {
-	drop := make(block.Transactions, 0, slots) // 要放弃的远程低价交易
+func (l *txPricedList) Discard(slots int, force bool) (block2.Transactions, bool) {
+	drop := make(block2.Transactions, 0, slots) // 要放弃的远程低价交易
 	for slots > 0 {
 		if len(l.urgent.list)*floatingRatio > len(l.floating.list)*urgentRatio || floatingRatio == 0 {
 			// 如果在清理过程中发现过时事务，则丢弃该事务
-			tx := heap.Pop(&l.urgent).(*block.Transaction)
+			tx := heap.Pop(&l.urgent).(*block2.Transaction)
 			if l.all.GetRemote(tx.Hash()) == nil { // 已删除或迁移
 				atomic.AddInt64(&l.stales, -1)
 				continue
@@ -2126,7 +1995,7 @@ func (l *txPricedList) Discard(slots int, force bool) (block.Transactions, bool)
 				break
 			}
 			// 如果在清理过程中发现过时事务，则丢弃该事务
-			tx := heap.Pop(&l.floating).(*block.Transaction)
+			tx := heap.Pop(&l.floating).(*block2.Transaction)
 			if l.all.GetRemote(tx.Hash()) == nil { // 已删除或迁移
 				atomic.AddInt64(&l.stales, -1)
 				continue
@@ -2148,11 +2017,11 @@ func (l *txPricedList) Discard(slots int, force bool) (block.Transactions, bool)
 
 type priceHeap struct {
 	baseFee *big.Int //更改baseFee后，应始终对堆进行重新排序
-	list    []*block.Transaction
+	list    []*block2.Transaction
 }
 
 func (h *priceHeap) Push(x interface{}) {
-	tx := x.(*block.Transaction)
+	tx := x.(*block2.Transaction)
 	h.list = append(h.list, tx)
 }
 
@@ -2179,7 +2048,7 @@ func (h *priceHeap) Less(i, j int) bool {
 	}
 }
 
-func (h *priceHeap) cmp(a, b *block.Transaction) int {
+func (h *priceHeap) cmp(a, b *block2.Transaction) int {
 	if h.baseFee != nil {
 		// Compare effective tips if baseFee is specified
 		if c := a.EffectiveGasTipCmp(b, h.baseFee); c != 0 {
@@ -2200,8 +2069,8 @@ var senderCacher = newTxSenderCacher(runtime.NumCPU())
 // txSenderCacherRequest是一种请求，用于恢复具有特定签名方案的事务发送方，并将其缓存到事务本身中。
 //inc字段定义每次恢复后要跳过的事务数，用于将相同的底层输入数组提供给不同的线程，但确保它们快速处理早期事务。
 type txSenderCacherRequest struct {
-	signer block.Signer
-	txs    []*block.Transaction
+	signer block2.Signer
+	txs    []*block2.Transaction
 	inc    int
 }
 
@@ -2227,13 +2096,13 @@ func newTxSenderCacher(threads int) *txSenderCacher {
 func (cacher *txSenderCacher) cache() {
 	for task := range cacher.tasks {
 		for i := 0; i < len(task.txs); i += task.inc {
-			block.Sender(task.signer, task.txs[i])
+			block2.Sender(task.signer, task.txs[i])
 		}
 	}
 }
 
 //恢复从一批事务中恢复发件人，并将其缓存回相同的数据结构中。没有进行验证，也没有对无效签名作出任何反应。这取决于以后调用代码。
-func (cacher *txSenderCacher) recover(signer block.Signer, txs []*block.Transaction) {
+func (cacher *txSenderCacher) recover(signer block2.Signer, txs []*block2.Transaction) {
 	// 如果没有要恢复的内容，请中止
 	if len(txs) == 0 {
 		return
@@ -2253,12 +2122,12 @@ func (cacher *txSenderCacher) recover(signer block.Signer, txs []*block.Transact
 }
 
 //recoverFromBlocks从一批块中恢复发送方，并将其缓存回相同的数据结构中。没有进行验证，也没有对无效签名作出任何反应。这取决于以后调用代码。
-func (cacher *txSenderCacher) recoverFromBlocks(signer block.Signer, blocks []*block.Block) {
+func (cacher *txSenderCacher) recoverFromBlocks(signer block2.Signer, blocks []*block2.Block) {
 	count := 0
 	for _, block := range blocks {
 		count += len(block.Transactions())
 	}
-	txs := make([]*block.Transaction, 0, count)
+	txs := make([]*block2.Transaction, 0, count)
 	for _, block := range blocks {
 		txs = append(txs, block.Transactions()...)
 	}

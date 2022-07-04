@@ -1,21 +1,20 @@
 package miner
 
 import (
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/blockchain"
+	"github.com/radiation-octopus/octopus-blockchain/blockchain/blockchainconfig"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
-	"math/big"
 	"sync"
-	"time"
 )
 
 //后端包含所有的处理区块的方法
 type Backend interface {
 	BlockChain() *blockchain.BlockChain
 	TxPool() *blockchain.TxPool
-	StateAtBlock(block *block.Block, reexec uint64, base *operationdb.OperationDB, checkLive bool, preferDisk bool) (statedb *operationdb.OperationDB, err error)
+	StateAtBlock(block *block2.Block, reexec uint64, base *operationdb.OperationDB, checkLive bool, preferDisk bool) (statedb *operationdb.OperationDB, err error)
 }
 
 //链启动类，配置参数启动
@@ -26,19 +25,6 @@ func (m *Miner) start() {
 
 func (m *Miner) close() {
 
-}
-
-// 工作的配置参数
-type Config struct {
-	Etherbase  entity.Address `toml:",omitempty"` // 区块开采奖励的公共广播
-	Notify     []string       `toml:",omitempty"` // 要通知新工作包http url列表
-	NotifyFull bool           `toml:",omitempty"` // 使用挂起的块标题
-	ExtraData  entity.Bytes   `toml:",omitempty"` // 阻止工作者的额外数据
-	GasFloor   uint64         // 工作区块的目标gas底线
-	GasCeil    uint64         // 工作区块的目标gas上限
-	GasPrice   *big.Int       // 工作交易的最低gas价格
-	Recommit   time.Duration  // 工作者重新工作的时间间隔
-	Noverify   bool           // 禁止远程工作
 }
 
 type Miner struct {
@@ -54,7 +40,7 @@ type Miner struct {
 	wg sync.WaitGroup //同步属性
 }
 
-func New(oct Backend, config *Config, engine consensus.Engine) *Miner {
+func New(oct Backend, config *blockchainconfig.Config, chainConfig *entity.ChainConfig, engine consensus.Engine) *Miner {
 	miner := &Miner{
 		oct: oct,
 		//mux:     mux,
@@ -62,7 +48,7 @@ func New(oct Backend, config *Config, engine consensus.Engine) *Miner {
 		exitCh:  make(chan struct{}),
 		startCh: make(chan entity.Address),
 		stopCh:  make(chan struct{}),
-		worker:  newWorker(config, engine, oct, true),
+		worker:  newWorker(config, chainConfig, engine, oct, true),
 	}
 	miner.wg.Add(1)
 	go miner.update()

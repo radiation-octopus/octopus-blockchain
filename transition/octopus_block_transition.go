@@ -3,8 +3,8 @@ package transition
 import (
 	"errors"
 	"fmt"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
 	"math"
@@ -44,7 +44,7 @@ func (gp *GasPool) Gas() uint64 {
 //交易过渡结构体
 type StateTransition struct {
 	gp         *GasPool
-	msg        block.Message
+	msg        block2.Message
 	gas        uint64
 	gasPrice   *big.Int
 	gasFeeCap  *big.Int
@@ -81,7 +81,7 @@ type ExecutionResult struct {
 }
 
 //交易过渡结构创建
-func NewTransition(ovm *vm.OVM, msg block.Message, gp *GasPool) *StateTransition {
+func NewTransition(ovm *vm.OVM, msg block2.Message, gp *GasPool) *StateTransition {
 	return &StateTransition{
 		gp:        gp,
 		ovm:       ovm,
@@ -96,7 +96,7 @@ func NewTransition(ovm *vm.OVM, msg block.Message, gp *GasPool) *StateTransition
 }
 
 //请求虚拟机处理，返回gas费用，账单
-func ApplyMessage(ovm *vm.OVM, msg block.Message, gp *GasPool) (*ExecutionResult, error) {
+func ApplyMessage(ovm *vm.OVM, msg block2.Message, gp *GasPool) (*ExecutionResult, error) {
 	return NewTransition(ovm, msg, gp).TransitionDb()
 }
 

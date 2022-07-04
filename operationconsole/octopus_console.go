@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/accounts"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/blockchain"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/oct"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus/log"
@@ -28,7 +28,7 @@ func (c *TxConsole) TxCmd(inMap map[string]interface{}) interface{} {
 	c.OctAPIBackend.allowUnprotectedTxs = true
 	fr := entity.HexToAddress(utils.GetInToStr(inMap["from"]))
 	to := entity.HexToAddress(utils.GetInToStr(inMap["to"]))
-	args := &block.TransactionArgs{
+	args := &block2.TransactionArgs{
 		From: &fr,
 		To:   &to,
 	}
@@ -55,7 +55,7 @@ func (c *TxConsole) TxCmd(inMap map[string]interface{}) interface{} {
 
 // signTransaction设置默认值并对给定事务进行签名
 //注意：调用方需要确保保留非锁定（如果适用），并在事务提交到发送池后释放它
-func (s *TxConsole) signTransaction(args *block.TransactionArgs, passwd string) (*block.Transaction, error) {
+func (s *TxConsole) signTransaction(args *block2.TransactionArgs, passwd string) (*block2.Transaction, error) {
 
 	//查找包含请求签名者的钱包
 	account := accounts.Account{Address: args.FromAddr()}
@@ -88,7 +88,7 @@ func (s *TxConsole) signTransaction(args *block.TransactionArgs, passwd string) 
 }
 
 // SubmitTransaction是一个助手函数，它将tx提交给txPool并记录消息。
-func SubmitTransaction(b Backend, tx *block.Transaction) (entity.Hash, error) {
+func SubmitTransaction(b Backend, tx *block2.Transaction) (entity.Hash, error) {
 	// 如果已指定交易费用上限，请确保给定交易的费用合理。
 	if err := checkTxFee(tx.GasPrice(), tx.Gas(), b.RPCTxFeeCap()); err != nil {
 		return entity.Hash{}, err
@@ -101,8 +101,8 @@ func SubmitTransaction(b Backend, tx *block.Transaction) (entity.Hash, error) {
 		return entity.Hash{}, err
 	}
 	// 打印包含完整tx详细信息的日志，用于手动调查和干预
-	signer := block.MakeSigner(b.CurrentBlock().Number())
-	from, err := block.Sender(signer, tx)
+	signer := block2.MakeSigner(b.CurrentBlock().Number())
+	from, err := block2.Sender(signer, tx)
 	if err != nil {
 		return entity.Hash{}, err
 	}

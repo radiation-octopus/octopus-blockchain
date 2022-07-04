@@ -1,11 +1,9 @@
 package node
 
-import "github.com/radiation-octopus/octopus-blockchain/blockchain"
-
 type NodeStart struct {
-	*blockchain.BlockChainStart `autoRelyonLang:"blockchain.BlockChainStart"`
+	Node *Node `autoInjectLang:"node.Node"`
 }
 
 func (ns *NodeStart) Start() {
-	Start()
+	ns.Node.start()
 }

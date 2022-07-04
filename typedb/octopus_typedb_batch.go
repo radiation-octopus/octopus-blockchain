@@ -1,4 +1,4 @@
-package operationdb
+package typedb
 
 // IdealBatchSize定义理想情况下应在一次写入中添加的数据批的大小。
 const IdealBatchSize = 100 * 1024

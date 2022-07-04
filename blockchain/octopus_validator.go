@@ -1,9 +1,9 @@
 package blockchain
 
 import (
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 )
 
 type BlockValidator struct {
@@ -24,11 +24,11 @@ func NewBlockValidator(blockchain *BlockChain, engine consensus.Engine) *BlockVa
 //定义验证器处理接口
 type Validator interface {
 	//验证给定块内容
-	validateBody(block *block.Block) error
+	validateBody(block *block2.Block) error
 }
 
 //区块验证具体实现
-func (v *BlockValidator) validateBody(block *block.Block) error {
+func (v *BlockValidator) validateBody(block *block2.Block) error {
 
 	return nil
 }

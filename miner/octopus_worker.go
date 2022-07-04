@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	mapset "github.com/deckarep/golang-set"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/blockchain"
+	"github.com/radiation-octopus/octopus-blockchain/blockchain/blockchainconfig"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/event"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
@@ -67,21 +69,21 @@ var (
 )
 
 type worker struct {
-	config      *Config
+	config      *blockchainconfig.Config
 	chainConfig *entity.ChainConfig
 	engine      consensus.Engine
 	oct         Backend
 	chain       *blockchain.BlockChain
 
 	// 订阅
-	pendingLogsFeed blockchain.Feed
+	pendingLogsFeed event.Feed
 
 	// 订阅的事件
 	//mux          *event.TypeMux
-	txsCh        chan blockchain.NewTxsEvent
-	txsSub       blockchain.Subscription
-	chainHeadCh  chan blockchain.ChainHeadEvent
-	chainHeadSub blockchain.Subscription
+	txsCh        chan event.NewTxsEvent
+	txsSub       event.Subscription
+	chainHeadCh  chan event.ChainHeadEvent
+	chainHeadSub event.Subscription
 	//chainSideCh  chan core.ChainSideEvent
 	//chainSideSub event.Subscription
 
@@ -89,7 +91,7 @@ type worker struct {
 	newWorkCh          chan *newWorkReq
 	getWorkCh          chan *getWorkReq
 	taskCh             chan *task
-	resultCh           chan *block.Block
+	resultCh           chan *block2.Block
 	startCh            chan struct{}
 	exitCh             chan struct{}
 	resubmitIntervalCh chan time.Duration
@@ -97,9 +99,9 @@ type worker struct {
 
 	wg sync.WaitGroup
 
-	current      *environment                 // 当前工作生命周期执行环境
-	localUncles  map[entity.Hash]*block.Block // 本地分叉区块作为潜在叔块
-	remoteUncles map[entity.Hash]*block.Block // 分叉区块中潜在的叔块
+	current      *environment                  // 当前工作生命周期执行环境
+	localUncles  map[entity.Hash]*block2.Block // 本地分叉区块作为潜在叔块
+	remoteUncles map[entity.Hash]*block2.Block // 分叉区块中潜在的叔块
 	//unconfirmed  *unconfirmedBlocks           	// 本地产生但尚未被确认的区块
 
 	mu       sync.RWMutex //保护coinbase的锁
@@ -122,7 +124,7 @@ type worker struct {
 	noempty uint32
 
 	//外部功能
-	isLocalB func(ader *block.Header) bool // 用于确定指定区块是否由本地工作者开采的函数。
+	isLocalB func(ader *block2.Header) bool // 用于确定指定区块是否由本地工作者开采的函数。
 
 	// 测试勾
 	newTaskHook  func(*task)                        // 方法在接收到新的密封任务时调用。
@@ -131,25 +133,26 @@ type worker struct {
 	resubmitHook func(time.Duration, time.Duration) // 方法在更新重新提交间隔时调用。
 }
 
-func newWorker(config *Config, engine consensus.Engine, oct Backend, init bool) *worker {
+func newWorker(config *blockchainconfig.Config, chainCfg *entity.ChainConfig, engine consensus.Engine, oct Backend, init bool) *worker {
 	worker := &worker{
-		config: config,
-		engine: engine,
-		oct:    oct,
+		config:      config,
+		chainConfig: chainCfg,
+		engine:      engine,
+		oct:         oct,
 		//mux:                mux,
 		chain: oct.BlockChain(),
 		//isLocalBlock:       isLocalBlock,
-		localUncles:  make(map[entity.Hash]*block.Block),
-		remoteUncles: make(map[entity.Hash]*block.Block),
+		localUncles:  make(map[entity.Hash]*block2.Block),
+		remoteUncles: make(map[entity.Hash]*block2.Block),
 		//unconfirmed:        newUnconfirmedBlocks(eth.BlockChain(), sealingLogAtDepth),
 		pendingTasks: make(map[entity.Hash]*task),
-		txsCh:        make(chan blockchain.NewTxsEvent, txChanSize),
-		chainHeadCh:  make(chan blockchain.ChainHeadEvent, chainHeadChanSize),
+		txsCh:        make(chan event.NewTxsEvent, txChanSize),
+		chainHeadCh:  make(chan event.ChainHeadEvent, chainHeadChanSize),
 		//chainSideCh:        make(chan core.ChainSideEvent, chainSideChanSize),
 		newWorkCh:          make(chan *newWorkReq),
 		getWorkCh:          make(chan *getWorkReq),
 		taskCh:             make(chan *task),
-		resultCh:           make(chan *block.Block, resultQueueSize),
+		resultCh:           make(chan *block2.Block, resultQueueSize),
 		exitCh:             make(chan struct{}),
 		startCh:            make(chan struct{}, 1),
 		resubmitIntervalCh: make(chan time.Duration),
@@ -284,12 +287,12 @@ func (w *worker) mainLoop() {
 				if gp := w.current.gasPool; gp != nil && gp.Gas() < entity.TxGas {
 					continue
 				}
-				txs := make(map[entity.Address]block.Transactions)
+				txs := make(map[entity.Address]block2.Transactions)
 				for _, tx := range ev.Txs {
-					acc, _ := block.Sender(w.current.signer, tx)
+					acc, _ := block2.Sender(w.current.signer, tx)
 					txs[acc] = append(txs[acc], tx)
 				}
-				txset := block.NewTransactionsByPriceAndNonce(w.current.signer, txs, w.current.header.BaseFee)
+				txset := block2.NewTransactionsByPriceAndNonce(w.current.signer, txs, w.current.header.BaseFee)
 				//tcount := w.current.tcount
 				w.commitTransactions(w.current, txset, nil)
 
@@ -360,7 +363,7 @@ func (w *worker) commitWork(interrupt *int32, noempty bool, timestamp int64) {
 }
 
 // generateWork根据给定的参数生成密封块。
-func (w *worker) generateWork(params *generateParams) (*block.Block, error) {
+func (w *worker) generateWork(params *generateParams) (*block2.Block, error) {
 	work, err := w.prepareWork(params)
 	if err != nil {
 		return nil, err
@@ -369,7 +372,7 @@ func (w *worker) generateWork(params *generateParams) (*block.Block, error) {
 
 	w.fillTransactions(nil, work)
 
-	return block.NewBlock(work.header, work.txs, work.receipts), nil
+	return block2.NewBlock(work.header, work.txs, work.receipts), nil
 }
 
 // prepareWork根据给定的参数构造密封任务，可以基于最后一个链头，也可以基于指定的父级。在此函数中，尚未填充挂起的事务，只返回空任务。
@@ -395,7 +398,7 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 	}
 	// 构造密封块标题，如果允许，设置额外字段
 	num := parent.Number()
-	header := &block.Header{
+	header := &block2.Header{
 		ParentHash: parent.Hash(),
 		Number:     num.Add(num, operationUtils.Big1),
 		GasLimit:   blockchain.CalcGasLimit(parent.GasLimit(), w.config.GasCeil),
@@ -450,7 +453,7 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 }
 
 // makeEnv为密封块创建新环境。
-func (w *worker) makeEnv(parent *block.Block, header *block.Header, coinbase entity.Address) (*environment, error) {
+func (w *worker) makeEnv(parent *block2.Block, header *block2.Header, coinbase entity.Address) (*environment, error) {
 	// 检索要在顶部执行的父状态，并为工作者启动一个预取程序，以加快封块速度。
 	operation, err := w.chain.StateAt(parent.Root())
 	if err != nil {
@@ -466,13 +469,13 @@ func (w *worker) makeEnv(parent *block.Block, header *block.Header, coinbase ent
 
 	// 注：传递的coinbase可能与header不同。
 	env := &environment{
-		signer:    block.MakeSigner(header.Number),
+		signer:    block2.MakeSigner(header.Number),
 		operation: operation,
 		coinbase:  coinbase,
 		ancestors: mapset.NewSet(),
 		family:    mapset.NewSet(),
 		header:    header,
-		uncles:    make(map[entity.Hash]*block.Header),
+		uncles:    make(map[entity.Hash]*block2.Header),
 	}
 	// 处理08时，祖先包含07（快速块）
 	for _, ancestor := range w.chain.GetBlocksFromHash(parent.Hash(), 7) {
@@ -523,9 +526,9 @@ func (w *worker) commit(env *environment, interval func(), update bool, start ti
 }
 
 //如果给定块已达到合并转换的总终端难度，则ISTTDREATCH返回指示符。
-func (w *worker) isTTDReached(header *block.Header) bool {
-	td := w.chain.GetTd(header.ParentHash, header.Number.Uint64()-1)
-	return td != nil
+func (w *worker) isTTDReached(header *block2.Header) bool {
+	td, ttd := w.chain.GetTd(header.ParentHash, header.Number.Uint64()-1), w.chain.Config().TerminalTotalDifficulty
+	return td != nil && ttd != nil && td.Cmp(ttd) >= 0
 }
 
 //fillTransactions从txpool检索挂起的事务，并将它们填充到给定的密封块中。将来可以使用插件定制事务选择和排序策略。
@@ -533,7 +536,7 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment) error {
 	// 将挂起的事务拆分为本地事务和远程事务
 	//用所有可用的挂起事务填充块。
 	pending := w.oct.TxPool().Pending(true)
-	localTxs, remoteTxs := make(map[entity.Address]block.Transactions), pending
+	localTxs, remoteTxs := make(map[entity.Address]block2.Transactions), pending
 	for _, account := range w.oct.TxPool().Locals() {
 		if txs := remoteTxs[account]; len(txs) > 0 {
 			delete(remoteTxs, account)
@@ -541,13 +544,13 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment) error {
 		}
 	}
 	if len(localTxs) > 0 {
-		txs := block.NewTransactionsByPriceAndNonce(env.signer, localTxs, env.header.BaseFee)
+		txs := block2.NewTransactionsByPriceAndNonce(env.signer, localTxs, env.header.BaseFee)
 		if err := w.commitTransactions(env, txs, interrupt); err != nil {
 			return err
 		}
 	}
 	if len(remoteTxs) > 0 {
-		txs := block.NewTransactionsByPriceAndNonce(env.signer, remoteTxs, env.header.BaseFee)
+		txs := block2.NewTransactionsByPriceAndNonce(env.signer, remoteTxs, env.header.BaseFee)
 		if err := w.commitTransactions(env, txs, interrupt); err != nil {
 			return err
 		}
@@ -555,7 +558,7 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment) error {
 	return nil
 }
 
-func (w *worker) commitTransactions(env *environment, txs *block.TransactionsByPriceAndNonce, interrupt *int32) error {
+func (w *worker) commitTransactions(env *environment, txs *block2.TransactionsByPriceAndNonce, interrupt *int32) error {
 	gasLimit := env.header.GasLimit
 	if env.gasPool == nil {
 		env.gasPool = new(transition.GasPool).AddGas(gasLimit)
@@ -596,7 +599,7 @@ func (w *worker) commitTransactions(env *environment, txs *block.TransactionsByP
 		}
 		//此处可以忽略错误。该错误已在事务接受期间被检查为事务池。
 		// 无论当前hf如何，我们都使用eip155签名者。
-		from, _ := block.Sender(env.signer, tx)
+		from, _ := block2.Sender(env.signer, tx)
 		//检查发送是否受重播保护。如果我们不在EIP155 hf阶段，开始忽略发送方，直到我们这样做。
 		//if tx.Protected() && !w.chainConfig.IsEIP155(env.header.Number) {
 		//	log.Error("Ignoring reply protected transaction", "hash", tx.Hash(), "eip155", w.chainConfig.EIP155Block)
@@ -660,7 +663,7 @@ func (w *worker) commitTransactions(env *environment, txs *block.TransactionsByP
 	return nil
 }
 
-func (w *worker) commitTransaction(env *environment, tx *block.Transaction) ([]*log.OctopusLog, error) {
+func (w *worker) commitTransaction(env *environment, tx *block2.Transaction) ([]*log.OctopusLog, error) {
 	//snap := env.operation.Snapshot()
 
 	receipt, err := blockchain.ApplyTransaction(w.chain, &env.coinbase, env.gasPool, env.operation, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig())
@@ -849,11 +852,11 @@ func (w *worker) resultLoop() {
 			}
 			//不同的块可以共享相同的sealhash，在此进行深度复制以防止写-写冲突。
 			var (
-				receipts = make([]*block.Receipt, len(task.receipts))
+				receipts = make([]*block2.Receipt, len(task.receipts))
 				logs     []*log.OctopusLog
 			)
 			for i, taskReceipt := range task.receipts {
-				receipt := new(block.Receipt)
+				receipt := new(block2.Receipt)
 				receipts[i] = receipt
 				*receipt = *taskReceipt
 
@@ -908,7 +911,7 @@ getWorkReq表示使用提供的参数获取新密封工作的请求。
 type getWorkReq struct {
 	params *generateParams
 	err    error
-	result chan *block.Block
+	result chan *block2.Block
 }
 
 /*
@@ -928,9 +931,9 @@ type generateParams struct {
 任务包含共识引擎密封和结果提交的所有信息
 */
 type task struct {
-	receipts  []*block.Receipt
+	receipts  []*block2.Receipt
 	state     *operationdb.OperationDB
-	block     *block.Block
+	block     *block2.Block
 	createdAt time.Time
 }
 
@@ -946,7 +949,7 @@ type intervalAdjust struct {
 环境是工作人员的当前环境，保存密封块生成的所有信息.
 */
 type environment struct {
-	signer block.Signer //签名者
+	signer block2.Signer //签名者
 
 	operation *operationdb.OperationDB // 在此处应用状态更改
 	ancestors mapset.Set               //祖先集（用于检查叔叔父有效性）
@@ -955,10 +958,10 @@ type environment struct {
 	gasPool   *transition.GasPool      //用于包装交易的可用gas
 	coinbase  entity.Address
 
-	header   *block.Header
-	txs      []*block.Transaction
-	receipts []*block.Receipt
-	uncles   map[entity.Hash]*block.Header
+	header   *block2.Header
+	txs      []*block2.Transaction
+	receipts []*block2.Receipt
+	uncles   map[entity.Hash]*block2.Header
 }
 
 //discard终止后台预取程序go例程。应始终为所有创建的环境实例调用它，否则可能会发生go例程泄漏。
@@ -970,8 +973,8 @@ func (env *environment) discard() {
 }
 
 // unclelist以列表格式返回包含的uncles。
-func (env *environment) unclelist() []*block.Header {
-	var uncles []*block.Header
+func (env *environment) unclelist() []*block2.Header {
+	var uncles []*block2.Header
 	for _, uncle := range env.uncles {
 		uncles = append(uncles, uncle)
 	}
@@ -987,7 +990,7 @@ func (env *environment) copy() *environment {
 		family:    env.family.Clone(),
 		tcount:    env.tcount,
 		coinbase:  env.coinbase,
-		header:    block.CopyHeader(env.header),
+		header:    block2.CopyHeader(env.header),
 		receipts:  copyReceipts(env.receipts),
 	}
 	if env.gasPool != nil {
@@ -996,9 +999,9 @@ func (env *environment) copy() *environment {
 	}
 	// The content of txs and uncles are immutable, unnecessary
 	// to do the expensive deep copy for them.
-	cpy.txs = make([]*block.Transaction, len(env.txs))
+	cpy.txs = make([]*block2.Transaction, len(env.txs))
 	copy(cpy.txs, env.txs)
-	cpy.uncles = make(map[entity.Hash]*block.Header)
+	cpy.uncles = make(map[entity.Hash]*block2.Header)
 	for hash, uncle := range env.uncles {
 		cpy.uncles[hash] = uncle
 	}
@@ -1006,8 +1009,8 @@ func (env *environment) copy() *environment {
 }
 
 // CopyReceives生成给定收据的深度副本。
-func copyReceipts(receipts []*block.Receipt) []*block.Receipt {
-	result := make([]*block.Receipt, len(receipts))
+func copyReceipts(receipts []*block2.Receipt) []*block2.Receipt {
+	result := make([]*block2.Receipt, len(receipts))
 	for i, l := range receipts {
 		cpy := *l
 		result[i] = &cpy
@@ -1016,7 +1019,7 @@ func copyReceipts(receipts []*block.Receipt) []*block.Receipt {
 }
 
 // totalFees computes total consumed miner fees in ETH. Block transactions and receipts have to have the same order.
-func totalFees(block *block.Block, receipts []*block.Receipt) *big.Float {
+func totalFees(block *block2.Block, receipts []*block2.Receipt) *big.Float {
 	feesWei := new(big.Int)
 	for i, tx := range block.Transactions() {
 		minerFee, _ := tx.EffectiveGasTip(block.BaseFee())

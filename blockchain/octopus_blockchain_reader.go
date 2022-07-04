@@ -1,33 +1,27 @@
 package blockchain
 
 import (
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
+	"github.com/radiation-octopus/octopus-blockchain/event"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"math/big"
 )
 
-func (bc *BlockChain) getBlockByNumber(number uint64) *block.Block {
-	hash := operationdb.ReadCanonicalHash(number)
-	if hash == (entity.Hash{}) {
-		return nil
-	}
-	return bc.GetBlock(hash, number)
-}
-
-func (bc *BlockChain) CurrentHeader() *block.Header {
+func (bc *BlockChain) CurrentHeader() *block2.Header {
 	return bc.hc.CurrentHeader()
 }
 
-func (bc *BlockChain) GetHeader(hash entity.Hash, number uint64) *block.Header {
+func (bc *BlockChain) GetHeader(hash entity.Hash, number uint64) *block2.Header {
 	return bc.hc.GetHeader(hash, number)
 }
 
-func (bc *BlockChain) GetHeaderByHash(hash entity.Hash) *block.Header {
+func (bc *BlockChain) GetHeaderByHash(hash entity.Hash) *block2.Header {
 	return bc.hc.GetHeaderByHash(hash)
 }
 
-func (bc *BlockChain) GetHeaderByNumber(number uint64) *block.Header {
+func (bc *BlockChain) GetHeaderByNumber(number uint64) *block2.Header {
 	return bc.hc.GetHeaderByNumber(number)
 }
 
@@ -36,12 +30,12 @@ func (bc *BlockChain) GetTd(hash entity.Hash, number uint64) *big.Int {
 }
 
 // GetBlock通过哈希和数字从数据库中检索块，如果找到，则将其缓存。
-func (bc *BlockChain) GetBlock(hash entity.Hash, number uint64) *block.Block {
-	// Short circuit if the block's already in the cache, retrieve otherwise
+func (bc *BlockChain) GetBlock(hash entity.Hash, number uint64) *block2.Block {
+	// 如果块已在缓存中，则短路，否则检索
 	//if block, ok := bc.blockCache.Get(hash); ok {
 	//	return block.(*types.Block)
 	//}
-	block := operationdb.ReadBlock(bc.db, hash, number)
+	block := rawdb.ReadBlock(bc.db, hash, number)
 	if block == nil {
 		return nil
 	}
@@ -55,11 +49,11 @@ func (bc *BlockChain) HasBlock(hash entity.Hash, number uint64) bool {
 	//if bc.blockCache.Contains(hash) {
 	//	return true
 	//}
-	return operationdb.HasBody(bc.db, hash, number)
+	return rawdb.HasBody(bc.db, hash, number)
 }
 
 // GetBlockByHash通过哈希从数据库中检索块，如果找到，则将其缓存。
-func (bc *BlockChain) GetBlockByHash(hash entity.Hash) *block.Block {
+func (bc *BlockChain) GetBlockByHash(hash entity.Hash) *block2.Block {
 	//number := bc.hc.GetBlockNumber(hash)
 	//if number == nil {
 	//	return nil
@@ -69,12 +63,12 @@ func (bc *BlockChain) GetBlockByHash(hash entity.Hash) *block.Block {
 }
 
 // Subscribe ChainHeadEvent注册ChainHeadEvent的订阅。
-func (bc *BlockChain) SubscribeChainHeadEvent(ch chan<- ChainHeadEvent) Subscription {
+func (bc *BlockChain) SubscribeChainHeadEvent(ch chan<- event.ChainHeadEvent) event.Subscription {
 	return bc.scope.Track(bc.chainHeadFeed.Subscribe(ch))
 }
 
-func (bc *BlockChain) CurrentBlock() *block.Block {
-	return bc.currentBlock.Load().(*block.Block)
+func (bc *BlockChain) CurrentBlock() *block2.Block {
+	return bc.currentBlock.Load().(*block2.Block)
 }
 
 //StateAt基于特定时间点返回新的可变状态。
@@ -83,27 +77,26 @@ func (bc *BlockChain) StateAt(root entity.Hash) (*operationdb.OperationDB, error
 }
 
 // GetBlocksFromHash返回与哈希对应的块，最多返回n-1个祖先。
-func (bc *BlockChain) GetBlocksFromHash(hash entity.Hash, n int) (blocks []*block.Block) {
+func (bc *BlockChain) GetBlocksFromHash(hash entity.Hash, n int) (blocks []*block2.Block) {
 	number := bc.hc.GetBlockNumber(hash)
-	var nu uint64
 	if number == nil {
 		return nil
 	}
 	for i := 0; i < n; i++ {
-		block := bc.GetBlock(hash, nu)
+		block := bc.GetBlock(hash, *number)
 		if block == nil {
 			break
 		}
 		blocks = append(blocks, block)
 		hash = block.ParentHash()
-		//*number--
+		*number--
 	}
 	return
 }
 
 // GetBlockByNumber按编号从数据库中检索块，如果找到，则缓存它（与其哈希关联）。
-func (bc *BlockChain) GetBlockByNumber(number uint64) *block.Block {
-	hash := operationdb.ReadCanonicalHash(number)
+func (bc *BlockChain) GetBlockByNumber(number uint64) *block2.Block {
+	hash := rawdb.ReadCanonicalHash(bc.db, number)
 	if hash == (entity.Hash{}) {
 		return nil
 	}

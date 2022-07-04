@@ -7,4 +7,6 @@ func init() {
 	director.Register(new(NodeStart))
 	//把停止注入
 	director.Register(new(NodeStop))
+	//node注入
+	director.Register(new(Node))
 }

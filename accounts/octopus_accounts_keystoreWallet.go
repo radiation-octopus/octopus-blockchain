@@ -1,8 +1,8 @@
 package accounts
 
 import (
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"math/big"
 )
 
@@ -96,7 +96,7 @@ func (w *keystoreWallet) SignTextWithPassphrase(account Account, passphrase stri
 
 // SignTx实现帐户。钱包，尝试使用给定帐户签署给定交易。
 //如果钱包没有包装此特定帐户，将返回一个错误以避免帐户泄漏（即使理论上我们可以通过共享密钥库后端进行签名）。
-func (w *keystoreWallet) SignTx(account Account, tx *block.Transaction, chainID *big.Int) (*block.Transaction, error) {
+func (w *keystoreWallet) SignTx(account Account, tx *block2.Transaction, chainID *big.Int) (*block2.Transaction, error) {
 	// 确保请求的帐户包含在
 	if !w.Contains(account) {
 		return nil, ErrUnknownAccount
@@ -106,7 +106,7 @@ func (w *keystoreWallet) SignTx(account Account, tx *block.Transaction, chainID 
 }
 
 // SignTxWithPassphrase实现帐户。钱包，尝试使用密码短语作为额外身份验证，使用给定帐户签署给定交易。
-func (w *keystoreWallet) SignTxWithPassphrase(account Account, passphrase string, tx *block.Transaction, chainID *big.Int) (*block.Transaction, error) {
+func (w *keystoreWallet) SignTxWithPassphrase(account Account, passphrase string, tx *block2.Transaction, chainID *big.Int) (*block2.Transaction, error) {
 	// 确保请求的帐户包含在
 	if !w.Contains(account) {
 		return nil, ErrUnknownAccount

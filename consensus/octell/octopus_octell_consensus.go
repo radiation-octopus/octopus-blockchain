@@ -5,10 +5,10 @@ import (
 	crand "crypto/rand"
 	"errors"
 	"fmt"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/consensus/misc"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
@@ -53,7 +53,7 @@ var (
 )
 
 // SealHash返回块在被密封之前的哈希值。
-func (octell *Octell) SealHash(header *block.Header) (hash entity.Hash) {
+func (octell *Octell) SealHash(header *block2.Header) (hash entity.Hash) {
 	hasher := sha3.NewLegacyKeccak256()
 
 	enc := []interface{}{
@@ -80,7 +80,7 @@ func (octell *Octell) SealHash(header *block.Header) (hash entity.Hash) {
 }
 
 //verifySeal检查一个块是否满足PoW难度要求，要么使用常用的octell缓存，要么使用完整的DAG快速远程挖掘。
-func (octell *Octell) verifySeal(chain consensus.ChainHeaderReader, header *block.Header, fulldag bool) error {
+func (octell *Octell) verifySeal(chain consensus.ChainHeaderReader, header *block2.Header, fulldag bool) error {
 	// 如果我们使用的是假的战俘，请接受任何有效的印章
 	if octell.Config.PowMode == ModeFake || octell.Config.PowMode == ModeFullFake {
 		time.Sleep(octell.fakeDelay)
@@ -143,7 +143,7 @@ func (octell *Octell) verifySeal(chain consensus.ChainHeaderReader, header *bloc
 
 // Prepare implements consensus.Engine, initializing the difficulty field of a
 // header to conform to the ethash protocol. The changes are done inline.
-func (octell *Octell) Prepare(chain consensus.ChainHeaderReader, header *block.Header) error {
+func (octell *Octell) Prepare(chain consensus.ChainHeaderReader, header *block2.Header) error {
 	parent := chain.GetHeader(header.ParentHash, header.Number.Uint64()-1)
 	if parent == nil {
 		return consensus.ErrUnknownAncestor
@@ -183,12 +183,12 @@ func (octell *Octell) dataset(block uint64, async bool) *dataset {
 }
 
 //作者实现共识。引擎，返回标题的coinbase作为工作证明，以验证块的作者。
-func (o *Octell) Author(header *block.Header) (entity.Address, error) {
+func (o *Octell) Author(header *block2.Header) (entity.Address, error) {
 	return header.Coinbase, nil
 }
 
 //verifyHeader检查标头是否符合股票以太坊octell引擎的一致规则。
-func (octell *Octell) verifyHeader(chain consensus.ChainHeaderReader, header, parent *block.Header, uncle bool, seal bool, unixNow int64) error {
+func (octell *Octell) verifyHeader(chain consensus.ChainHeaderReader, header, parent *block2.Header, uncle bool, seal bool, unixNow int64) error {
 	// 确保标头的额外数据节的大小合理
 	//if uint64(len(header.Extra)) > params.MaximumExtraDataSize {
 	//	return fmt.Errorf("extra-data too long: %d > %d", len(header.Extra), params.MaximumExtraDataSize)
@@ -250,12 +250,12 @@ func (octell *Octell) verifyHeader(chain consensus.ChainHeaderReader, header, pa
 }
 
 // CalcDifficulty是难度调整算法。它返回在给定父块的时间和难度的时间创建新块时应具有的难度。
-func (octell *Octell) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *block.Header) *big.Int {
+func (octell *Octell) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *block2.Header) *big.Int {
 	return CalcDifficulty(chain.Config(), time, parent)
 }
 
 // CalcDifficulty是难度调整算法。它返回在给定父块的时间和难度的时间创建新块时应具有的难度。
-func CalcDifficulty(config *entity.ChainConfig, time uint64, parent *block.Header) *big.Int {
+func CalcDifficulty(config *entity.ChainConfig, time uint64, parent *block2.Header) *big.Int {
 	next := new(big.Int).Add(parent.Number, operationutils.Big1)
 	switch {
 	case config.IsArrowGlacier(next):
@@ -276,10 +276,10 @@ func CalcDifficulty(config *entity.ChainConfig, time uint64, parent *block.Heade
 }
 
 // makedifficullycalculator创建具有给定炸弹延迟的difficullycalculator。难度是用拜占庭规则计算的，这与宅地不同，叔叔如何影响计算
-func makeDifficultyCalculator(bombDelay *big.Int) func(time uint64, parent *block.Header) *big.Int {
+func makeDifficultyCalculator(bombDelay *big.Int) func(time uint64, parent *block2.Header) *big.Int {
 	// 注意，下面的计算将查看父编号，即块编号下方的1。因此，我们从给出的延迟中删除一个
 	bombDelayFromParent := new(big.Int).Sub(bombDelay, operationutils.Big1)
-	return func(time uint64, parent *block.Header) *big.Int {
+	return func(time uint64, parent *block2.Header) *big.Int {
 		bigTime := new(big.Int).SetUint64(time)
 		bigParentTime := new(big.Int).SetUint64(parent.Time)
 
@@ -289,7 +289,7 @@ func makeDifficultyCalculator(bombDelay *big.Int) func(time uint64, parent *bloc
 
 		x.Sub(bigTime, bigParentTime)
 		x.Div(x, operationutils.Big9)
-		if parent.UncleHash == block.EmptyUncleHash {
+		if parent.UncleHash == block2.EmptyUncleHash {
 			x.Sub(operationutils.Big1, x)
 		} else {
 			x.Sub(operationutils.Big2, x)
@@ -328,7 +328,7 @@ func makeDifficultyCalculator(bombDelay *big.Int) func(time uint64, parent *bloc
 }
 
 // calcDifficultyHomestead是难度调整算法。它返回在给定父块的时间和难度的时间创建新块时应具有的难度。计算使用宅地规则。
-func calcDifficultyHomestead(time uint64, parent *block.Header) *big.Int {
+func calcDifficultyHomestead(time uint64, parent *block2.Header) *big.Int {
 	// algorithm:
 	// diff = (parent_diff +
 	//         (parent_diff / 2048 * max(1 - (block_timestamp - parent_timestamp) // 10, -99))
@@ -374,7 +374,7 @@ func calcDifficultyHomestead(time uint64, parent *block.Header) *big.Int {
 }
 
 // calcDifficultyFrontier是难度调整算法。它返回在给定父块的时间和难度的时间创建新块时应具有的难度。计算使用边界规则。
-func calcDifficultyFrontier(time uint64, parent *block.Header) *big.Int {
+func calcDifficultyFrontier(time uint64, parent *block2.Header) *big.Int {
 	diff := new(big.Int)
 	adjust := new(big.Int).Div(parent.Difficulty, entity.DifficultyBoundDivisor)
 	bigTime := new(big.Int)
@@ -405,7 +405,7 @@ func calcDifficultyFrontier(time uint64, parent *block.Header) *big.Int {
 }
 
 //VerifyHeaders与VerifyHeader类似，但同时验证一批标头。该方法返回退出通道以中止操作，返回结果通道以检索异步验证。
-func (o *Octell) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*block.Header, seals []bool) (chan<- struct{}, <-chan error) {
+func (o *Octell) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*block2.Header, seals []bool) (chan<- struct{}, <-chan error) {
 	//如果我们运行的是全引擎模拟，请接受任何有效输入
 	if o.Config.PowMode == ModeFullFake || len(headers) == 0 {
 		abort, results := make(chan struct{}), make(chan error, len(headers))
@@ -468,8 +468,8 @@ func (o *Octell) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*blo
 	return abort, errorsOut
 }
 
-func (octell *Octell) verifyHeaderWorker(chain consensus.ChainHeaderReader, headers []*block.Header, seals []bool, index int, unixNow int64) error {
-	var parent *block.Header
+func (octell *Octell) verifyHeaderWorker(chain consensus.ChainHeaderReader, headers []*block2.Header, seals []bool, index int, unixNow int64) error {
+	var parent *block2.Header
 	if index == 0 {
 		parent = chain.GetHeader(headers[0].ParentHash, headers[0].Number.Uint64()-1)
 	} else if headers[index-1].Hash() == headers[index].ParentHash {
@@ -482,27 +482,27 @@ func (octell *Octell) verifyHeaderWorker(chain consensus.ChainHeaderReader, head
 }
 
 //FinalizeAndAssemble 实现共识。引擎，累积积木和叔叔奖励，设置最终状态并组装积木。
-func (o *Octell) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *block.Header, ob *operationdb.OperationDB, txs []*block.Transaction, uncles []*block.Header, receipts []*block.Receipt) (*block.Block, error) {
+func (o *Octell) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *block2.Header, ob *operationdb.OperationDB, txs []*block2.Transaction, uncles []*block2.Header, receipts []*block2.Receipt) (*block2.Block, error) {
 	// 最终确定块
 	o.Finalize(chain, header, ob, txs, uncles)
 
 	// 收割台似乎已完成，组装成块并返回
-	return block.NewBlock(header, txs, receipts), nil
+	return block2.NewBlock(header, txs, receipts), nil
 }
 
 // Finalize实现共识。引擎，累积积木和叔叔奖励，设置标题的最终状态
-func (octell *Octell) Finalize(chain consensus.ChainHeaderReader, header *block.Header, ob *operationdb.OperationDB, txs []*block.Transaction, uncles []*block.Header) {
+func (octell *Octell) Finalize(chain consensus.ChainHeaderReader, header *block2.Header, ob *operationdb.OperationDB, txs []*block2.Transaction, uncles []*block2.Header) {
 	// 累积任何方块和叔叔奖励并提交最终状态根
 	accumulateRewards(chain.Config(), ob, header, uncles)
 	header.Root = ob.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 }
 
 //Seal实现共识。引擎，试图找到满足模块难度要求的nonce。
-func (o *Octell) Seal(chain consensus.ChainHeaderReader, b *block.Block, results chan<- *block.Block, stop <-chan struct{}) error {
+func (o *Octell) Seal(chain consensus.ChainHeaderReader, b *block2.Block, results chan<- *block2.Block, stop <-chan struct{}) error {
 	// 如果我们运行的是假的PoW，只需立即返回一个0 nonce
 	if o.Config.PowMode == ModeFake || o.Config.PowMode == ModeFullFake {
 		header := b.Header()
-		header.Nonce, header.MixDigest = block.BlockNonce{}, entity.Hash{}
+		header.Nonce, header.MixDigest = block2.BlockNonce{}, entity.Hash{}
 		select {
 		case results <- b.WithSeal(header):
 		default:
@@ -540,7 +540,7 @@ func (o *Octell) Seal(chain consensus.ChainHeaderReader, b *block.Block, results
 	}
 	var (
 		pend   sync.WaitGroup
-		locals = make(chan *block.Block)
+		locals = make(chan *block2.Block)
 	)
 	for i := 0; i < threads; i++ {
 		pend.Add(1)
@@ -551,7 +551,7 @@ func (o *Octell) Seal(chain consensus.ChainHeaderReader, b *block.Block, results
 	}
 	// 等待，直到终止密封或找到nonce
 	go func() {
-		var result *block.Block
+		var result *block2.Block
 		select {
 		case <-stop:
 			// 外部中止，停止所有工作线程
@@ -578,7 +578,7 @@ func (o *Octell) Seal(chain consensus.ChainHeaderReader, b *block.Block, results
 }
 
 //累计向给定区块的币库授予采矿奖励。总奖励包括静态块奖励和包含叔叔的奖励。每个叔叔街区的铸币库也会得到奖励。
-func accumulateRewards(config *entity.ChainConfig, ob *operationdb.OperationDB, header *block.Header, uncles []*block.Header) {
+func accumulateRewards(config *entity.ChainConfig, ob *operationdb.OperationDB, header *block2.Header, uncles []*block2.Header) {
 	// 根据链进度选择正确的区块奖励
 	blockReward := FrontierBlockReward
 	if config.IsByzantium(header.Number) {

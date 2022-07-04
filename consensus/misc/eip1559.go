@@ -2,8 +2,8 @@ package misc
 
 import (
 	"fmt"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"math/big"
 )
@@ -11,7 +11,7 @@ import (
 // VerifyEip1559Header验证EIP-1559中更改的一些标头属性，
 //-gas极限检查
 //-基本费用检查
-func VerifyEip1559Header(config *entity.ChainConfig, parent, header *block.Header) error {
+func VerifyEip1559Header(config *entity.ChainConfig, parent, header *block2.Header) error {
 	// 验证气体限值是否保持在允许范围内
 	parentGasLimit := parent.GasLimit
 	if !config.IsLondon(parent.Number) {
@@ -34,7 +34,7 @@ func VerifyEip1559Header(config *entity.ChainConfig, parent, header *block.Heade
 }
 
 //CalcBaseFee计算标头的基本费用。
-func CalcBaseFee(config *entity.ChainConfig, parent *block.Header) *big.Int {
+func CalcBaseFee(config *entity.ChainConfig, parent *block2.Header) *big.Int {
 	// 如果当前块是第一个EIP-1559块，请返回InitialBaseFee。
 	if !config.IsLondon(parent.Number) {
 		return new(big.Int).SetUint64(entity.InitialBaseFee)

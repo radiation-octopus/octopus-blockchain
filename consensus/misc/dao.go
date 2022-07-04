@@ -1,8 +1,8 @@
 package misc
 
 import (
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"math/big"
 )
 
@@ -10,7 +10,7 @@ import (
 //DAO硬叉扩展到标头的有效性：
 //a） 如果节点不是fork，则不接受具有fork特定额外数据集的[fork，fork+10]范围中的块
 //b） 如果节点是pro fork，则要求特定范围内的块具有唯一的额外数据集。
-func VerifyDAOHeaderExtraData(config *entity.ChainConfig, header *block.Header) error {
+func VerifyDAOHeaderExtraData(config *entity.ChainConfig, header *block2.Header) error {
 	// 如果节点不关心DAO分叉，则短路验证
 	if config.DAOForkBlock == nil {
 		return nil

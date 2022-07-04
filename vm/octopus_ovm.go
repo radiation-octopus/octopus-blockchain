@@ -3,9 +3,9 @@ package vm
 import (
 	"errors"
 	"fmt"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus/log"
@@ -73,7 +73,7 @@ type ChainContext interface {
 	Engine() consensus.Engine
 
 	// 返回其对应hash
-	GetHeader(entity.Hash, uint64) *block.Header
+	GetHeader(entity.Hash, uint64) *block2.Header
 }
 
 type StateDB interface {
@@ -135,14 +135,13 @@ func NewOVM(blockCtx BlockContext, txCtx TxContext, operation *operationdb.Opera
 	return evm
 }
 
-// Reset resets the EVM with a new transaction context.Reset
-// This is not threadsafe and should only be done very cautiously.
+// 重置使用新的事务上下文重置EVM。重置这不是线程安全的，只能非常谨慎地执行。
 func (ovm *OVM) Reset(txCtx TxContext, operationdb *operationdb.OperationDB) {
 	ovm.TxContext = txCtx
 	ovm.Operationdb = operationdb
 }
 
-func NewOVMBlockContext(header *block.Header, chain ChainContext, author *entity.Address) BlockContext {
+func NewOVMBlockContext(header *block2.Header, chain ChainContext, author *entity.Address) BlockContext {
 	var (
 		beneficiary entity.Address
 		baseFee     *big.Int
@@ -176,7 +175,7 @@ func NewOVMBlockContext(header *block.Header, chain ChainContext, author *entity
 }
 
 // NewEVMTxContext为单个事务创建新的事务配置。
-func NewEVMTxContext(msg block.Message) TxContext {
+func NewEVMTxContext(msg block2.Message) TxContext {
 	return TxContext{
 		Origin:   msg.From(),
 		GasPrice: new(big.Int).Set(msg.GasPrice()),
@@ -213,7 +212,7 @@ func (ovm *OVM) Call(caller ContractRef, addr entity.Address, input []byte, gas 
 	return nil, 0, err
 }
 
-func GetHashFn(ref *block.Header, chain ChainContext) func(n uint64) entity.Hash {
+func GetHashFn(ref *block2.Header, chain ChainContext) func(n uint64) entity.Hash {
 	var cache []entity.Hash
 
 	return func(n uint64) entity.Hash {

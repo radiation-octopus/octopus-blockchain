@@ -4,10 +4,11 @@ import (
 	crand "crypto/rand"
 	"errors"
 	lru "github.com/hashicorp/golang-lru"
-	"github.com/radiation-octopus/octopus-blockchain/block"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
-	"github.com/radiation-octopus/octopus-blockchain/operationdb"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
+	"github.com/radiation-octopus/octopus-blockchain/typedb"
 	"math"
 	"math/big"
 	mrand "math/rand"
@@ -22,8 +23,8 @@ const (
 
 type HeaderChain struct {
 	//config        *entity.ChainConfig
-	chainDb       operationdb.OperationDB
-	genesisHeader *block.Header //创世区块的当前头部
+	chainDb       typedb.Database
+	genesisHeader *block2.Header //创世区块的当前头部
 
 	currentHeader     atomic.Value //头链的当前头部
 	currentHeaderHash entity.Hash  //头链的当前头的hash
@@ -38,44 +39,62 @@ type HeaderChain struct {
 	engine consensus.Engine
 }
 
-func (hc *HeaderChain) CurrentHeader() *block.Header {
-	return hc.currentHeader.Load().(*block.Header)
+func (hc *HeaderChain) CurrentHeader() *block2.Header {
+	return hc.currentHeader.Load().(*block2.Header)
 }
-func (hc *HeaderChain) GetHeader(hash entity.Hash, number uint64) *block.Header {
+
+//GetHeader通过哈希和数字从数据库中检索块头，如果找到，则将其缓存。
+func (hc *HeaderChain) GetHeader(hash entity.Hash, number uint64) *block2.Header {
 	//先查看缓存通道是否存在
 	if header, ok := hc.headerCache.Get(hash); ok {
-		return header.(*block.Header)
+		return header.(*block2.Header)
 	}
 	//检索数据库查询
-	header := operationdb.ReadHeader(hash, number)
+	header := rawdb.ReadHeader(hc.chainDb, hash, number)
 	if header == nil {
 		return nil
 	}
-	// Cache the found header for next time and return
+	//缓存找到的标头以供下次使用并返回
 	hc.headerCache.Add(hash, header)
 	return header
 }
-func (hc *HeaderChain) GetHeaderByNumber(number uint64) *block.Header {
-	hash := operationdb.ReadCanonicalHash(number)
+
+//GetHeaderByNumber按编号从数据库中检索块头，如果找到，则缓存它（与其哈希关联）。
+func (hc *HeaderChain) GetHeaderByNumber(number uint64) *block2.Header {
+	hash := rawdb.ReadCanonicalHash(hc.chainDb, number)
 	if hash == (entity.Hash{}) {
 		return nil
 	}
 	return hc.GetHeader(hash, number)
 }
-func (hc *HeaderChain) GetHeaderByHash(hash entity.Hash) *block.Header {
-	return nil
+func (hc *HeaderChain) GetHeaderByHash(hash entity.Hash) *block2.Header {
+	number := hc.GetBlockNumber(hash)
+	if number == nil {
+		return nil
+	}
+	return hc.GetHeader(hash, *number)
 }
 func (hc *HeaderChain) GetTd(hash entity.Hash, number uint64) *big.Int {
-	return nil
+	// 如果td已经在缓存中，则短路，否则检索
+	if cached, ok := hc.tdCache.Get(hash); ok {
+		return cached.(*big.Int)
+	}
+	td := rawdb.ReadTd(hc.chainDb, hash, number)
+	if td == nil {
+		return nil
+	}
+	// 缓存找到的尸体以备下次使用并返回
+	hc.tdCache.Add(hash, td)
+	return td
 }
 
 // GetBlockNumber从缓存或数据库中检索属于给定哈希的块号
-func (hc *HeaderChain) GetBlockNumber(hash entity.Hash) *big.Int {
+func (hc *HeaderChain) GetBlockNumber(hash entity.Hash) *uint64 {
 	if cached, ok := hc.numberCache.Get(hash); ok {
-		number := cached.(big.Int)
+		number := cached.(uint64)
 		return &number
 	}
-	number := operationdb.ReadHeaderNumber(hc.chainDb, hash)
+	number := rawdb.ReadHeaderNumber(hc.chainDb, hash)
 	if number != nil {
 		hc.numberCache.Add(hash, *number)
 	}
@@ -83,19 +102,19 @@ func (hc *HeaderChain) GetBlockNumber(hash entity.Hash) *big.Int {
 }
 
 // SetCurrentHeader将规范通道的内存标头标记设置为给定标头。
-func (hc *HeaderChain) SetCurrentHeader(head *block.Header) {
+func (hc *HeaderChain) SetCurrentHeader(head *block2.Header) {
 	hc.currentHeader.Store(head)
 	hc.currentHeaderHash = head.Hash()
 	//headHeaderGauge.Update(head.Number.Int64())
 }
 
 // SetGenesis为链设置新的genesis块标题
-func (hc *HeaderChain) SetGenesis(head *block.Header) {
+func (hc *HeaderChain) SetGenesis(head *block2.Header) {
 	hc.genesisHeader = head
 }
 
 // NewHeaderChain创建新的HeaderChain结构。ProcInterrupt指向父级的中断信号量。
-func NewHeaderChain(engine consensus.Engine, procInterrupt func() bool) (*HeaderChain, error) {
+func NewHeaderChain(chainDb typedb.Database, engine consensus.Engine, procInterrupt func() bool) (*HeaderChain, error) {
 	headerCache, _ := lru.New(headerCacheLimit)
 	tdCache, _ := lru.New(tdCacheLimit)
 	numberCache, _ := lru.New(numberCacheLimit)
@@ -107,6 +126,7 @@ func NewHeaderChain(engine consensus.Engine, procInterrupt func() bool) (*Header
 	}
 	hc := &HeaderChain{
 		//config:        config,
+		chainDb:       chainDb,
 		headerCache:   headerCache,
 		tdCache:       tdCache,
 		numberCache:   numberCache,
@@ -119,7 +139,7 @@ func NewHeaderChain(engine consensus.Engine, procInterrupt func() bool) (*Header
 		return nil, errors.New("genesis not found in chain")
 	}
 	hc.currentHeader.Store(hc.genesisHeader)
-	if head := operationdb.ReadHeadBlockHash(); head != (entity.Hash{}) {
+	if head := rawdb.ReadHeadBlockHash(hc.chainDb); head != (entity.Hash{}) {
 		if chead := hc.GetHeaderByHash(head); chead != nil {
 			hc.currentHeader.Store(chead)
 		}

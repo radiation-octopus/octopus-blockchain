@@ -1,4 +1,4 @@
-package operationdb
+package tire
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
+	"github.com/radiation-octopus/octopus/log"
 	"github.com/radiation-octopus/octopus/utils"
 	"sync"
 )
@@ -114,6 +115,15 @@ func (t *Trie) TryUpdate(key, value []byte) error {
 		t.root = n
 	}
 	return nil
+}
+
+// 更新将键与trie中的值相关联。对Get的后续调用将返回值。
+//如果值的长度为零，则从trie中删除任何现有值，并且对Get的调用将返回nil。
+//值字节存储在trie中时，调用者不得修改它们。
+func (t *Trie) Update(key, value []byte) {
+	if err := t.TryUpdate(key, value); err != nil {
+		log.Error(fmt.Sprintf("Unhandled trie error: %v", err))
+	}
 }
 
 func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error) {
@@ -295,6 +305,18 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 	}
 }
 
+// TryDelete从trie中删除key的任何现有值。如果在数据库中未找到节点，则返回MissingNodeError。
+func (t *Trie) TryDelete(key []byte) error {
+	t.unhashed++
+	k := keybytesToHex(key)
+	_, n, err := t.delete(t.root, nil, k)
+	if err != nil {
+		return err
+	}
+	t.root = n
+	return nil
+}
+
 func concat(s1 []byte, s2 ...byte) []byte {
 	r := make([]byte, len(s1)+len(s2))
 	copy(r, s1)
@@ -314,6 +336,7 @@ func (t *Trie) Copy() *Trie {
 	return &Trie{
 		db:       t.db,
 		root:     t.root,
+		owner:    t.owner,
 		unhashed: t.unhashed,
 		tracer:   t.tracer.copy(),
 	}
@@ -388,11 +411,11 @@ func (t *Trie) Commit(onleaf LeafCallback) (entity.Hash, int, error) {
 //否则，如果db为nil，New将死机，如果找不到根节点，则返回MissingNodeError。
 //访问trie会根据需要从数据库或节点池加载节点。加载的节点将一直保留到其“缓存生成”过期。
 //每次调用提交都会创建一个新的缓存生成。cachelimit设置要保留的过去缓存生成数。
-func NewSecure(root entity.Hash, db *TrieDatabase) (*SecureTrie, error) {
+func NewSecure(owner entity.Hash, root entity.Hash, db *TrieDatabase) (*SecureTrie, error) {
 	if db == nil {
 		panic("NewSecure called without a Triedatabase")
 	}
-	trie, err := New(root, db)
+	trie, err := New(owner, root, db)
 	if err != nil {
 		return nil, err
 	}
@@ -403,12 +426,18 @@ func NewSecure(root entity.Hash, db *TrieDatabase) (*SecureTrie, error) {
 //如果root是空字符串的零哈希或sha3哈希，则trie最初为空，不需要数据库。
 //否则，如果db为nil，New将死机，如果数据库中不存在root，则返回MissingNodeError。
 //访问trie会根据需要从db加载节点。
-func New(root entity.Hash, db *TrieDatabase) (*Trie, error) {
+func New(owner entity.Hash, root entity.Hash, db *TrieDatabase) (*Trie, error) {
+	return newTrie(owner, root, db)
+}
+
+//newTrie是用于构造具有给定参数的trie的内部函数。
+func newTrie(owner entity.Hash, root entity.Hash, db *TrieDatabase) (*Trie, error) {
 	if db == nil {
 		panic("trie.New called without a database")
 	}
 	trie := &Trie{
-		db: db,
+		db:    db,
+		owner: owner,
 		//tracer: newTracer(),
 	}
 	if root != (entity.Hash{}) && root != emptyRoot {
@@ -419,6 +448,19 @@ func New(root entity.Hash, db *TrieDatabase) (*Trie, error) {
 		trie.root = rootnode
 	}
 	return trie, nil
+}
+
+//New使用db中的现有根节点和为存储邻近性分配的所有者创建trie。如果root是空字符串的零散列或sha3散列，则trie最初为空，不需要数据库。
+//否则，如果db为nil，New将死机，如果数据库中不存在根，则返回MissingNodeError。
+//访问trie会根据需要从db加载节点。
+func NewTrie(owner entity.Hash, root entity.Hash, db *TrieDatabase) (*Trie, error) {
+	return newTrie(owner, root, db)
+}
+
+// NewEmpty是创建空树的快捷方式。它主要用于测试。
+func NewEmpty(db *TrieDatabase) *Trie {
+	tr, _ := newTrie(entity.Hash{}, entity.Hash{}, db)
+	return tr
 }
 
 // SecureTrie对于并发使用不安全。
@@ -451,6 +493,7 @@ func (t *SecureTrie) Commit(onleaf LeafCallback) (entity.Hash, int, error) {
 }
 
 func (s *SecureTrie) TryGet(key []byte) ([]byte, error) {
+	fmt.Println("TryGet:", key)
 	return s.trie.TryGet(s.hashKey(key))
 }
 
@@ -495,6 +538,14 @@ func (t *SecureTrie) hashKey(key []byte) []byte {
 	h.sha.Read(t.hashKeyBuf[:])
 	returnHasherToPool(h)
 	return t.hashKeyBuf[:]
+}
+
+//重置将删除引用的根节点并清除所有内部状态。
+func (t *Trie) Reset() {
+	t.root = nil
+	t.owner = entity.Hash{}
+	t.unhashed = 0
+	t.tracer.reset()
 }
 
 func returnHasherToPool(h *hasher) {

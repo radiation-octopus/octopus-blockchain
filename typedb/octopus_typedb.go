@@ -1,4 +1,4 @@
-package operationdb
+package typedb
 
 import (
 	"io"
@@ -8,7 +8,7 @@ type Database interface {
 	Reader
 	Writer
 	Batcher
-	//Iteratee
+	Iteratee
 	//Stater
 	//Compacter
 	//Snapshotter
@@ -36,10 +36,10 @@ type KeyValueReader interface {
 
 type KeyValueWriter interface {
 	// Put将给定值插入键值数据存储。
-	Put(mark string, key string, value []byte) error
+	Put(key []byte, value []byte) error
 
 	// Delete从键值数据存储中删除键。
-	Delete(mark string, key string) error
+	Delete(key []byte) error
 }
 
 //func (op OperationDB) IsHas(mark string, key string) (bool, error) {
@@ -93,13 +93,58 @@ type AncientReaderOp interface {
 	AncientSize(kind string) (uint64, error)
 }
 
+// AncientWriter包含写入不可变古代数据所需的方法。
+type AncientWriter interface {
+	// ModifyAncients在古代存储上运行写入操作。
+	//如果函数返回错误，则会还原对基础存储的任何更改。整数返回值是写入数据的总大小。
+	ModifyAncients(func(AncientWriteOp) error) (int64, error)
+
+	// TruncateHead丢弃古代存储中除前n个古代数据外的所有古代数据。截断后，可以从item\n-1（从0开始）访问最新的项。
+	TruncateHead(n uint64) error
+
+	// TruncateTail丢弃古代存储中的前n个古代数据。
+	//已删除的项目将被忽略。截断后，最早可以访问的项是item\n（从0开始）。
+	//删除的项目可能不会立即从旧存储中删除，但只有当累积的删除数据达到阈值时，才会一起删除。
+	TruncateTail(n uint64) error
+
+	// 同步将所有内存中的古代存储数据刷新到磁盘。
+	Sync() error
+
+	// MigrateTable处理给定表的条目并将其迁移到新格式。
+	//第二个参数是一个函数，它接受一个原始条目并以最新格式返回它。
+	MigrateTable(string, func([]byte) ([]byte, error)) error
+}
+
+// 将AncientWriteOp指定给ModifyAncients的函数参数。
+type AncientWriteOp interface {
+	// Append添加RLP编码的项。
+	Append(kind string, number uint64, item interface{}) error
+
+	// AppendRaw添加了一个没有RLP编码的项。
+	AppendRaw(kind string, number uint64, item []byte) error
+}
+
+// AncientStater包装备份数据存储的Stat方法。
+type AncientStater interface {
+	// AncientDatadir返回古代存储的根目录路径。
+	AncientDatadir() (string, error)
+}
+
+// AncientStore包含允许处理支持不可变链数据存储的不同古代数据存储所需的所有方法。
+type AncientStore interface {
+	AncientReader
+	AncientWriter
+	AncientStater
+	io.Closer
+}
+
 // KeyValueStore包含允许处理支持高级数据库的不同键值数据存储所需的所有方法。
 type KeyValueStore interface {
 	KeyValueReader
 	KeyValueWriter
 	//KeyValueStater
 	Batcher
-	//Iteratee
+	Iteratee
 	//Compacter
 	//Snapshotter
 	io.Closer

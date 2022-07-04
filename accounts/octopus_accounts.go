@@ -2,9 +2,9 @@ package accounts
 
 import (
 	"fmt"
-	"github.com/radiation-octopus/octopus-blockchain/block"
-	"github.com/radiation-octopus/octopus-blockchain/blockchain"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/event"
 	"golang.org/x/crypto/sha3"
 	"math/big"
 )
@@ -76,10 +76,10 @@ type Wallet interface {
 	//它可以单独通过其中包含的地址来查找指定的帐户，也可以选择借助嵌入URL字段中的任何位置元数据来查找指定的帐户。
 	//如果钱包需要额外的身份验证来签署请求（例如，解密帐户的密码或验证交易的PIN码），将返回AuthNeededError实例，其中包含用户需要哪些字段或操作的信息。
 	//用户可以通过SignTxWithPassphrase或其他方block锁密钥库中的帐户）提供所需的详细信息来重试。
-	SignTx(account Account, tx *block.Transaction, chainID *big.Int) (*block.Transaction, error)
+	SignTx(account Account, tx *block2.Transaction, chainID *big.Int) (*block2.Transaction, error)
 
 	// SignTxWithPassphrase与SignTx相同，但也接受密码
-	SignTxWithPassphrase(account Account, passphrase string, tx *block.Transaction, chainID *big.Int) (*block.Transaction, error)
+	SignTxWithPassphrase(account Account, passphrase string, tx *block2.Transaction, chainID *big.Int) (*block2.Transaction, error)
 }
 
 //后端是一个“钱包提供商”，其中可能包含一批他们可以签署交易的账户，并可根据请求签署交易。
@@ -92,7 +92,7 @@ type Backend interface {
 	Wallets() []Wallet
 
 	// Subscribe创建异步订阅，以便在后端检测到钱包到达或离开时接收通知。
-	Subscribe(sink chan<- WalletEvent) blockchain.Subscription
+	Subscribe(sink chan<- WalletEvent) event.Subscription
 }
 
 // Account表示位于可选URL字段定义的特定位置的octopus帐户。

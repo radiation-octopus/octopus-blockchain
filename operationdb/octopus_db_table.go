@@ -1,6 +1,8 @@
 package operationdb
 
+import "github.com/radiation-octopus/octopus-blockchain/typedb"
+
 type table struct {
-	db     Database
+	db     typedb.Database
 	prefix string
 }
