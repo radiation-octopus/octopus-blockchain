@@ -43,6 +43,16 @@ func isForked(s, head *big.Int) bool {
 	return s.Cmp(head) <= 0
 }
 
+// IsEIP150返回num是否等于EIP150 fork块或更大。
+func (c *ChainConfig) IsEIP150(num *big.Int) bool {
+	return isForked(c.EIP150Block, num)
+}
+
+//IsEIP155返回num是否等于EIP155 fork块或更大。
+func (c *ChainConfig) IsEIP155(num *big.Int) bool {
+	return isForked(c.EIP155Block, num)
+}
+
 // IsEIP158返回num是否等于EIP158 fork块或更大。
 func (c *ChainConfig) IsEIP158(num *big.Int) bool {
 	return isForked(c.EIP158Block, num)
@@ -63,6 +73,22 @@ func (c *ChainConfig) IsMuirGlacier(num *big.Int) bool {
 	return isForked(c.MuirGlacierBlock, num)
 }
 
+// IsPetersburg返回num是-等于或大于PetersburgBlock fork block
+//-还是nil，并且君士坦丁堡处于活动状态
+func (c *ChainConfig) IsPetersburg(num *big.Int) bool {
+	return isForked(c.PetersburgBlock, num) || c.PetersburgBlock == nil && isForked(c.ConstantinopleBlock, num)
+}
+
+// IsIstanbul返回num是否等于或大于伊斯坦布尔分叉块。
+func (c *ChainConfig) IsIstanbul(num *big.Int) bool {
+	return isForked(c.IstanbulBlock, num)
+}
+
+// IsBerlin返回num是否等于Berlin fork块或更大。
+func (c *ChainConfig) IsBerlin(num *big.Int) bool {
+	return isForked(c.BerlinBlock, num)
+}
+
 //IsConstantinople返回num是否等于或大于君士坦丁堡叉块。
 func (c *ChainConfig) IsConstantinople(num *big.Int) bool {
 	return isForked(c.ConstantinopleBlock, num)
@@ -76,4 +102,36 @@ func (c *ChainConfig) IsByzantium(num *big.Int) bool {
 //IsHomestead返回num是否等于homestead块或更大。
 func (c *ChainConfig) IsHomestead(num *big.Int) bool {
 	return isForked(c.HomesteadBlock, num)
+}
+
+// 规则包装ChainConfig，只是语法糖，或者可以用于不包含或不需要有关块的信息的函数。
+//规则是一次性接口，这意味着它不应该在过渡阶段之间使用。
+type Rules struct {
+	ChainID                                                 *big.Int
+	IsHomestead, IsEIP150, IsEIP155, IsEIP158               bool
+	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul bool
+	IsBerlin, IsLondon                                      bool
+	IsMerge                                                 bool
+}
+
+// 规则确保c的ChainID不是零。
+func (c *ChainConfig) Rules(num *big.Int, isMerge bool) Rules {
+	chainID := c.ChainID
+	if chainID == nil {
+		chainID = new(big.Int)
+	}
+	return Rules{
+		ChainID:          new(big.Int).Set(chainID),
+		IsHomestead:      c.IsHomestead(num),
+		IsEIP150:         c.IsEIP150(num),
+		IsEIP155:         c.IsEIP155(num),
+		IsEIP158:         c.IsEIP158(num),
+		IsByzantium:      c.IsByzantium(num),
+		IsConstantinople: c.IsConstantinople(num),
+		IsPetersburg:     c.IsPetersburg(num),
+		IsIstanbul:       c.IsIstanbul(num),
+		IsBerlin:         c.IsBerlin(num),
+		IsLondon:         c.IsLondon(num),
+		IsMerge:          isMerge,
+	}
 }

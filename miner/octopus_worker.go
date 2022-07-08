@@ -11,6 +11,7 @@ import (
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/event"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb/tire"
 	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
 	"github.com/radiation-octopus/octopus-blockchain/transition"
@@ -372,7 +373,7 @@ func (w *worker) generateWork(params *generateParams) (*block2.Block, error) {
 
 	w.fillTransactions(nil, work)
 
-	return block2.NewBlock(work.header, work.txs, work.receipts), nil
+	return block2.NewBlock(work.header, work.txs, work.receipts, tire.NewStackTrie(nil)), nil
 }
 
 // prepareWork根据给定的参数构造密封任务，可以基于最后一个链头，也可以基于指定的父级。在此函数中，尚未填充挂起的事务，只返回空任务。
@@ -508,11 +509,11 @@ func (w *worker) commit(env *environment, interval func(), update bool, start ti
 			select {
 			case w.taskCh <- &task{receipts: env.receipts, state: env.operation, block: block, createdAt: time.Now()}:
 				//w.unconfirmed.Shift(block.NumberU64() - 1)
-				log.Info("Commit new sealing work", "number", block.Number(),
-					"uncles", len(env.uncles), "txs", env.tcount,
-					"gas", block.GasUsed(), "fees", totalFees(block, env.receipts),
-					//"elapsed", common.PrettyDuration(time.Since(start))
-				)
+				//123log.Info("Commit new sealing work", "number", block.Number(),
+				//	"uncles", len(env.uncles), "txs", env.tcount,
+				//	"gas", block.GasUsed(), "fees", totalFees(block, env.receipts),
+				//	//"elapsed", common.PrettyDuration(time.Since(start))
+				//)
 
 			case <-w.exitCh:
 				log.Info("工作者已退出")
@@ -609,7 +610,7 @@ func (w *worker) commitTransactions(env *environment, txs *block2.TransactionsBy
 		// 开始执行事务
 		env.operation.Prepare(tx.Hash(), env.tcount)
 
-		logs, err := w.commitTransaction(env, tx)
+		_, err := w.commitTransaction(env, tx)
 		switch {
 		case errors.Is(err, terr.ErrGasLimitReached):
 			//弹出当前的gas交易，而不从帐户转入下一个交易
@@ -628,7 +629,7 @@ func (w *worker) commitTransactions(env *environment, txs *block2.TransactionsBy
 
 		case errors.Is(err, nil):
 			// 一切正常，从同一个帐户收集日志并在下一个事务中转移
-			coalescedLogs = append(coalescedLogs, logs...)
+			coalescedLogs = append(coalescedLogs)
 			env.tcount++
 			txs.Shift()
 
@@ -666,7 +667,7 @@ func (w *worker) commitTransactions(env *environment, txs *block2.TransactionsBy
 func (w *worker) commitTransaction(env *environment, tx *block2.Transaction) ([]*log.OctopusLog, error) {
 	//snap := env.operation.Snapshot()
 
-	receipt, err := blockchain.ApplyTransaction(w.chain, &env.coinbase, env.gasPool, env.operation, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig())
+	receipt, err := blockchain.ApplyTransaction(w.chainConfig, w.chain, &env.coinbase, env.gasPool, env.operation, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig())
 	if err != nil {
 		//env.operation.RevertToSnapshot(snap)
 		return nil, err
@@ -674,7 +675,7 @@ func (w *worker) commitTransaction(env *environment, tx *block2.Transaction) ([]
 	env.txs = append(env.txs, tx)
 	env.receipts = append(env.receipts, receipt)
 
-	return receipt.Logs, nil
+	return nil, nil
 }
 
 // newWorkLoop是一个独立的goroutine，用于在收到事件后提交新的密封工作。
@@ -753,7 +754,7 @@ func (w *worker) newWorkLoop(recommit time.Duration) {
 			}
 
 		case adjust := <-w.resubmitAdjustCh:
-			// Adjust resubmit interval by feedback.
+			// 通过反馈调整重新提交间隔。
 			if adjust.inc {
 				before := recommit
 				target := float64(recommit.Nanoseconds()) / adjust.ratio
@@ -866,14 +867,14 @@ func (w *worker) resultLoop() {
 				receipt.TransactionIndex = uint(i)
 
 				// 更新所有日志中的块哈希，因为它现在可用，而不是在创建单个事务的收据/日志时可用。
-				receipt.Logs = make([]*log.OctopusLog, len(taskReceipt.Logs))
-				for i, taskLog := range taskReceipt.Logs {
-					log := new(log.OctopusLog)
-					receipt.Logs[i] = log
-					*log = *taskLog
-					//log.BlockHash = hash
-				}
-				logs = append(logs, receipt.Logs...)
+				//receipt.Logs = make([]*log.OctopusLog, len(taskReceipt.Logs))
+				//for i, taskLog := range taskReceipt.Logs {
+				//	log := new(log.OctopusLog)
+				//	receipt.Logs[i] = log
+				//	*log = *taskLog
+				//	//log.BlockHash = hash
+				//}
+				//logs = append(logs, receipt.Logs...)
 			}
 			// 将块和状态提交到数据库。
 			_, err := w.chain.WriteBlockAndSetHead(b, receipts, logs, task.state, true)

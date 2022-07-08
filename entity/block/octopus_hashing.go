@@ -1,7 +1,8 @@
-package crypto
+package block
 
 import (
 	"bytes"
+	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus/utils"
@@ -21,7 +22,7 @@ var hasherPool = sync.Pool{
 
 // rlpHash对x进行编码，并对编码的字节进行哈希运算。
 func RlpHash(x interface{}) (h entity.Hash) {
-	sha := hasherPool.Get().(KeccakState)
+	sha := hasherPool.Get().(crypto.KeccakState)
 	defer hasherPool.Put(sha)
 	sha.Reset()
 	rlp.Encode(sha, x)
@@ -31,7 +32,7 @@ func RlpHash(x interface{}) (h entity.Hash) {
 
 // prefixedRlpHash在rlp编码x之前将前缀写入哈希器。它用于类型化事务。
 func PrefixedRlpHash(prefix byte, x interface{}) (h entity.Hash) {
-	sha := hasherPool.Get().(KeccakState)
+	sha := hasherPool.Get().(crypto.KeccakState)
 	defer hasherPool.Put(sha)
 	sha.Reset()
 	sha.Write([]byte{prefix})

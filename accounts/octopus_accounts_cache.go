@@ -250,15 +250,15 @@ type fileCache struct {
 
 //scan对给定目录执行新扫描，与已缓存的文件名进行比较，并返回文件集：创建、删除、更新。
 func (fc *fileCache) scan(keyDir string) (mapset.Set, mapset.Set, mapset.Set, error) {
-	t0 := time.Now()
+	//t0 := time.Now()
 
 	// 列出keystore文件夹中的所有失败
-	files, err := os.Open(keyDir)
-	log.Debug(files)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	t1 := time.Now()
+	//files, err := os.Open(keyDir)
+	//log.Debug(files)
+	//if err != nil {
+	//	return nil, nil, nil, err
+	//}
+	//t1 := time.Now()
 
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
@@ -290,7 +290,7 @@ func (fc *fileCache) scan(keyDir string) (mapset.Set, mapset.Set, mapset.Set, er
 	//		newLastMod = modified
 	//	}
 	//}
-	t2 := time.Now()
+	//t2 := time.Now()
 
 	// 更新跟踪的文件并返回三组
 	deletes := fc.all.Difference(all)   // Deletes = previous - current
@@ -298,10 +298,10 @@ func (fc *fileCache) scan(keyDir string) (mapset.Set, mapset.Set, mapset.Set, er
 	updates := mods.Difference(creates) // Updates = modified - creates
 
 	fc.all, fc.lastMod = all, newLastMod
-	t3 := time.Now()
+	//t3 := time.Now()
 
 	// 报告扫描统计数据并返回
-	log.Debug("FS scan times", "list", t1.Sub(t0), "set", t2.Sub(t1), "diff", t3.Sub(t2))
+	//log.Debug("FS scan times", "list", t1.Sub(t0), "set", t2.Sub(t1), "diff", t3.Sub(t2))
 	return creates, deletes, updates, nil
 }
 

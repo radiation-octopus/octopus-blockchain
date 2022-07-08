@@ -46,13 +46,13 @@ func (octell *Octell) mine(b *block2.Block, id int, seed uint64, abort chan stru
 		powBuffer = new(big.Int)
 	)
 	//logger := octell.Config.Log.New("miner", id)
-	log.Info("Started Octell search for new nonces", "seed", seed)
+	//123log.Info("Started Octell search for new nonces", "seed", seed)
 search:
 	for {
 		select {
 		case <-abort:
 			// 工作已终止，更新统计信息并中止
-			log.Info("Octell nonce search aborted", "attempts", nonce-seed)
+			//123log.Info("Octell nonce search aborted", "attempts", nonce-seed)
 			//octell.hashrate.Mark(attempts)
 			break search
 
@@ -74,7 +74,7 @@ search:
 				// 密封并返回块（如果仍然需要）
 				select {
 				case found <- b.WithSeal(header):
-					log.Info("Octell nonce found and reported", "attempts", nonce-seed, "nonce", nonce)
+					//123log.Info("Octell nonce found and reported", "attempts", nonce-seed, "nonce", nonce)
 				case <-abort:
 					log.Info("Octell nonce found but discarded", "attempts", nonce-seed, "nonce", nonce)
 				}
@@ -252,7 +252,7 @@ func (s *remoteSealer) sendNotification(ctx context.Context, url string, json []
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Warn("Failed to notify remote miner", "err", err)
+		//123log.Warn("Failed to notify remote miner", "err", err)
 	} else {
 		log.Info("Notified remote miner", "miner", url, "hash", work[0], "target", work[2])
 		resp.Body.Close()

@@ -19,5 +19,5 @@ require (
 	github.com/radiation-octopus/octopus v0.0.0-00010101000000-000000000000
 	github.com/syndtr/goleveldb v1.0.1-0.20220614013038-64ee5596c38a
 	golang.org/x/crypto v0.0.0-20210921155107-089bfa567519
-	gorm.io/gorm v1.23.5 // indirect
+	gorm.io/gorm v1.23.5
 )

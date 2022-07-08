@@ -1,6 +1,7 @@
 package tire
 
 import (
+	"errors"
 	"fmt"
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
@@ -154,6 +155,45 @@ func TrieNewDatabaseWithConfig(diskdb typedb.KeyValueStore, config *Config) *Tri
 	return db
 }
 
+// 节点从内存中检索编码的缓存trie节点。如果找不到缓存，该方法将查询持久数据库中的内容。
+func (db *TrieDatabase) Node(hash entity.Hash) ([]byte, error) {
+	// 检索元根是没有意义的
+	if hash == (entity.Hash{}) {
+		return nil, errors.New("not found")
+	}
+	//从干净缓存中检索节点（如果可用）
+	if db.cleans != nil {
+		if enc := db.cleans.Get(nil, hash[:]); enc != nil {
+			//memcacheCleanHitMeter.Mark(1)
+			//memcacheCleanReadMeter.Mark(int64(len(enc)))
+			return enc, nil
+		}
+	}
+	// 从脏缓存中检索节点（如果可用）
+	db.lock.RLock()
+	dirty := db.dirties[hash]
+	db.lock.RUnlock()
+
+	if dirty != nil {
+		//memcacheDirtyHitMeter.Mark(1)
+		//memcacheDirtyReadMeter.Mark(int64(dirty.size))
+		return dirty.rlp(), nil
+	}
+	//memcacheDirtyMissMeter.Mark(1)
+
+	// 内存中的内容不可用，尝试从磁盘中检索
+	enc := rawdb.ReadTrieNode(db.diskdb, hash)
+	if len(enc) != 0 {
+		if db.cleans != nil {
+			db.cleans.Set(hash[:], enc)
+			//memcacheCleanMissMeter.Mark(1)
+			//memcacheCleanWriteMeter.Mark(int64(len(enc)))
+		}
+		return enc, nil
+	}
+	return nil, errors.New("not found")
+}
+
 // 节点从内存中检索缓存的trie节点，如果在内存缓存中找不到任何节点，则返回nil。
 func (db *TrieDatabase) node(hash entity.Hash) node {
 	// 从干净缓存中检索节点（如果可用）
@@ -252,6 +292,99 @@ func (db *TrieDatabase) Reference(child entity.Hash, parent entity.Hash) {
 	db.reference(child, parent)
 }
 
+// Cap迭代刷新旧但仍引用的trie节点，直到总内存使用量低于给定阈值。
+//注意，该方法是一个非同步的变异器。将其与其他变异子同时调用是不安全的。
+func (db *TrieDatabase) Cap(limit utils.StorageSize) error {
+	// 创建数据库批处理以清除持久数据。重要的是，外部代码不会看到不一致的状态（提交期间从内存缓存中删除但尚未在持久存储中的引用数据）。
+	//这是通过在数据库写入完成时仅取消对现有数据的缓存来确保的。
+	nodes, storage, start := len(db.dirties), db.dirtiesSize, time.Now()
+	batch := db.diskdb.NewBatch()
+
+	// db。dirtiesSize只包含缓存中的有用数据，但在报告总内存消耗时，还需要统计维护元数据。
+	size := db.dirtiesSize + utils.StorageSize((len(db.dirties)-1)*cachedNodeSize)
+	size += db.childrenSize - utils.StorageSize(len(db.dirties[entity.Hash{}].children)*(entity.HashLength+2))
+
+	// 如果预映像缓存足够大，请推送到磁盘。如果仍然很小，请留待以后进行重复数据消除写入。
+	flushPreimages := db.preimagesSize > 4*1024*1024
+	if flushPreimages {
+		if db.preimages == nil {
+			log.Error("Attempted to write preimages whilst disabled")
+		} else {
+			//rawdb.WritePreimages(batch, db.preimages)
+			if batch.ValueSize() > typedb.IdealBatchSize {
+				if err := batch.Write(); err != nil {
+					return err
+				}
+				batch.Reset()
+			}
+		}
+	}
+	// 继续从刷新列表中提交节点，直到低于允许值
+	oldest := db.oldest
+	for size > limit && oldest != (entity.Hash{}) {
+		// 获取最旧的引用节点并推入批处理
+		node := db.dirties[oldest]
+		rawdb.WriteTrieNode(batch, oldest, node.rlp())
+
+		// 如果我们超过了理想的批量大小，请提交并重置
+		if batch.ValueSize() >= typedb.IdealBatchSize {
+			if err := batch.Write(); err != nil {
+				log.Error("Failed to write flush list to disk", "err", err)
+				return err
+			}
+			batch.Reset()
+		}
+		// 迭代到下一个刷新项，如果达到大小上限，则中止。
+		//Size是总大小，包括有用的缓存数据（哈希->blob）、缓存项元数据以及外部子映射。
+		size -= utils.StorageSize(entity.HashLength + int(node.size) + cachedNodeSize)
+		if node.children != nil {
+			size -= utils.StorageSize(cachedNodeChildrenSize + len(node.children)*(entity.HashLength+2))
+		}
+		oldest = node.flushNext
+	}
+	// 清除最后一批中的所有剩余数据
+	if err := batch.Write(); err != nil {
+		log.Error("Failed to write flush list to disk", "err", err)
+		return err
+	}
+	// 写入成功，清除刷新的数据
+	db.lock.Lock()
+	defer db.lock.Unlock()
+
+	if flushPreimages {
+		if db.preimages == nil {
+			log.Error("Attempted to reset preimage cache whilst disabled")
+		} else {
+			db.preimages, db.preimagesSize = make(map[entity.Hash][]byte), 0
+		}
+	}
+	for db.oldest != oldest {
+		node := db.dirties[db.oldest]
+		delete(db.dirties, db.oldest)
+		db.oldest = node.flushNext
+
+		db.dirtiesSize -= utils.StorageSize(entity.HashLength + int(node.size))
+		if node.children != nil {
+			db.childrenSize -= utils.StorageSize(cachedNodeChildrenSize + len(node.children)*(entity.HashLength+2))
+		}
+	}
+	if db.oldest != (entity.Hash{}) {
+		db.dirties[db.oldest].flushPrev = entity.Hash{}
+	}
+	db.flushnodes += uint64(nodes - len(db.dirties))
+	db.flushsize += storage - db.dirtiesSize
+	db.flushtime += time.Since(start)
+
+	//memcacheFlushTimeTimer.Update(time.Since(start))
+	//memcacheFlushSizeMeter.Mark(int64(storage - db.dirtiesSize))
+	//memcacheFlushNodesMeter.Mark(int64(nodes - len(db.dirties)))
+
+	log.Debug("Persisted nodes from memory database", "nodes", nodes-len(db.dirties), "size", storage-db.dirtiesSize, "time", time.Since(start),
+		"flushnodes", db.flushnodes, "flushsize", db.flushsize, "flushtime", db.flushtime, "livenodes", len(db.dirties), "livesize", db.dirtiesSize)
+
+	return nil
+}
+
 // reference是引用的私有锁定版本。
 func (db *TrieDatabase) reference(child entity.Hash, parent entity.Hash) {
 	// 如果该节点不存在，则是从磁盘中提取的节点，跳过
@@ -294,8 +427,8 @@ func (db *TrieDatabase) Dereference(root entity.Hash) {
 	//memcacheGCSizeMeter.Mark(int64(storage - db.dirtiesSize))
 	//memcacheGCNodesMeter.Mark(int64(nodes - len(db.dirties)))
 
-	log.Debug("Dereferenced trie from memory database", "nodes", nodes-len(db.dirties), "size", storage-db.dirtiesSize, "time", time.Since(start),
-		"gcnodes", db.gcnodes, "gcsize", db.gcsize, "gctime", db.gctime, "livenodes", len(db.dirties), "livesize", db.dirtiesSize)
+	//log.Debug("Dereferenced trie from memory database", "nodes", nodes-len(db.dirties), "size", storage-db.dirtiesSize, "time", time.Since(start),
+	//	"gcnodes", db.gcnodes, "gcsize", db.gcsize, "gctime", db.gctime, "livenodes", len(db.dirties), "livesize", db.dirtiesSize)
 }
 
 //解引用是解引用的私有锁定版本。
@@ -353,7 +486,7 @@ func (db *TrieDatabase) Commit(node entity.Hash, report bool, callback func(enti
 	// 创建数据库批处理以清除持久数据。
 	//重要的是，外部代码不会看到不一致的状态（提交期间从内存缓存中删除的引用数据，但尚未在持久存储中）。
 	//只有在数据库写入完成时才取消对现有数据的缓存，才能确保这一点。
-	start := time.Now()
+	//start := time.Now()
 	batch := db.diskdb.NewBatch()
 
 	// 将所有累积的前映像移动到写入批中
@@ -366,7 +499,7 @@ func (db *TrieDatabase) Commit(node entity.Hash, report bool, callback func(enti
 		batch.Reset()
 	}
 	// 将trie自身移动到批次中，如果积累了足够的数据，则进行刷新
-	nodes, storage := len(db.dirties), db.dirtiesSize
+	//nodes, storage := len(db.dirties), db.dirtiesSize
 
 	uncacher := &cleaner{db}
 	if err := db.commit(node, batch, uncacher, callback); err != nil {
@@ -393,12 +526,12 @@ func (db *TrieDatabase) Commit(node entity.Hash, report bool, callback func(enti
 	//memcacheCommitSizeMeter.Mark(int64(storage - db.dirtiesSize))
 	//memcacheCommitNodesMeter.Mark(int64(nodes - len(db.dirties)))
 
-	logger := log.Info
-	if !report {
-		logger = log.Debug
-	}
-	logger("Persisted trie from memory database", "nodes", nodes-len(db.dirties)+int(db.flushnodes), "size", storage-db.dirtiesSize+db.flushsize, "time", time.Since(start)+db.flushtime,
-		"gcnodes", db.gcnodes, "gcsize", db.gcsize, "gctime", db.gctime, "livenodes", len(db.dirties), "livesize", db.dirtiesSize)
+	//logger := log.Info
+	//if !report {
+	//	logger = log.Debug
+	//}
+	//123logger("Persisted trie from memory database", "nodes", nodes-len(db.dirties)+int(db.flushnodes), "size", storage-db.dirtiesSize+db.flushsize, "time", time.Since(start)+db.flushtime,
+	//	"gcnodes", db.gcnodes, "gcsize", db.gcsize, "gctime", db.gctime, "livenodes", len(db.dirties), "livesize", db.dirtiesSize)
 
 	// 重置垃圾收集统计信息
 	db.gcnodes, db.gcsize, db.gctime = 0, 0, 0
@@ -411,6 +544,7 @@ func (db *TrieDatabase) Commit(node entity.Hash, report bool, callback func(enti
 func (db *TrieDatabase) commit(hash entity.Hash, batch typedb.Batch, uncacher *cleaner, callback func(entity.Hash)) error {
 	// 如果节点不存在，则它是以前提交的节点
 	node, ok := db.dirties[hash]
+	//123fmt.Println("------------",db.dirties)
 	if !ok {
 		return nil
 	}
@@ -423,8 +557,10 @@ func (db *TrieDatabase) commit(hash entity.Hash, batch typedb.Batch, uncacher *c
 	if err != nil {
 		return err
 	}
+	//fmt.Println(node.node)
 	// 如果我们已达到最佳批量大小，请提交并重新开始
 	rawdb.WriteTrieNode(batch, hash, node.rlp())
+
 	if callback != nil {
 		callback(hash)
 	}
@@ -587,9 +723,11 @@ func expandNode(hash hashNode, n node) node {
 
 // forChilds为该节点的所有跟踪子节点调用回调，包括来自节点内部的隐式子节点和来自节点外部的显式子节点。
 func (n *cachedNode) forChilds(onChild func(hash entity.Hash)) {
+	//判断是否还有孩子节点，有则继续递归提交commit
 	for child := range n.children {
 		onChild(child)
 	}
+	//判断本节点是否为折叠trie节点
 	if _, ok := n.node.(rawNode); !ok {
 		forGatherChildren(n.node, onChild)
 	}

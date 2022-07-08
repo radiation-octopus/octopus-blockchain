@@ -280,7 +280,7 @@ func WriteReceipts(db typedb.KeyValueWriter, hash entity.Hash, number uint64, re
 	}
 	bytes, err := rlp.EncodeToBytes(storageReceipts)
 	if err != nil {
-		log.Info("Failed to encode block receipts", "err", err)
+		//123log.Info("Failed to encode block receipts", "err", err)
 	}
 	// 存储扁平收据切片
 	if err := db.Put(blockReceiptsKey(number, hash), bytes); err != nil {
@@ -389,5 +389,12 @@ func DeleteTd(db typedb.KeyValueWriter, hash entity.Hash, number uint64) {
 func DeleteCanonicalHash(db typedb.KeyValueWriter, number uint64) {
 	if err := db.Delete(headerHashKey(number)); err != nil {
 		log.Info("Failed to delete number to hash mapping", "err", err)
+	}
+}
+
+// DeleteTxLookupEntry删除与哈希相关的所有事务数据。
+func DeleteTxLookupEntry(db typedb.KeyValueWriter, hash entity.Hash) {
+	if err := db.Delete(txLookupKey(hash)); err != nil {
+		log.Info("Failed to delete transaction lookup entry", "err", err)
 	}
 }

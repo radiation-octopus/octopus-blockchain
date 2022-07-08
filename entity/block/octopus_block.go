@@ -2,7 +2,6 @@ package block
 
 import (
 	"encoding/binary"
-	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
@@ -11,7 +10,7 @@ import (
 
 var (
 	EmptyRootHash  = entity.BytesToHash(utils.Hex2Bytes("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"))
-	EmptyUncleHash = crypto.RlpHash([]*Header(nil))
+	EmptyUncleHash = RlpHash([]*Header(nil))
 )
 
 type BlockNonce [8]byte
@@ -52,7 +51,7 @@ type Header struct {
 
 func (h *Header) Hash() entity.Hash {
 	//哈希运算
-	return crypto.RlpHash(h)
+	return RlpHash(h)
 	//return entity.Hash{}
 }
 
@@ -74,13 +73,12 @@ type Block struct {
 
 // 新块创建新块。复制输入数据，对标题和字段值的更改不会影响块。
 //头中的TxHash、uncleshash、ReceiptHash和Bloom的值将被忽略，并设置为从给定的txs、uncles和receipts派生的值。
-func NewBlock(header *Header, txs []*Transaction, receipts []*Receipt) *Block {
+func NewBlock(header *Header, txs []*Transaction, receipts []*Receipt, hasher TrieHasher) *Block {
 	b := &Block{header: CopyHeader(header), td: new(big.Int)}
-	var hasher crypto.TrieHasher
 	if len(txs) == 0 {
 		b.header.TxHash = EmptyRootHash
 	} else {
-		b.header.TxHash = crypto.DeriveSha(Transactions(txs), hasher)
+		b.header.TxHash = DeriveSha(Transactions(txs), hasher)
 		b.transactions = make(Transactions, len(txs))
 		copy(b.transactions, txs)
 	}
@@ -88,7 +86,7 @@ func NewBlock(header *Header, txs []*Transaction, receipts []*Receipt) *Block {
 	if len(receipts) == 0 {
 		b.header.ReceiptHash = EmptyRootHash
 	} else {
-		b.header.ReceiptHash = crypto.DeriveSha(Receipts(receipts), hasher)
+		b.header.ReceiptHash = DeriveSha(Receipts(receipts), hasher)
 		//b.header.Bloom = CreateBloom(receipts)
 	}
 

@@ -3,7 +3,8 @@ package vm
 import (
 	"errors"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
-	"github.com/radiation-octopus/octopus-blockchain/operationutils"
+	"github.com/radiation-octopus/octopus/log"
+	"hash"
 )
 
 type Config struct {
@@ -17,12 +18,19 @@ type Config struct {
 	ExtraEips []int // 其他eip
 }
 
+// keccakState包裹着sha3。状态除了常见的散列方法外，它还支持读取以从散列状态获取可变数量的数据。
+//读取比求和更快，因为它不复制内部状态，但也修改内部状态。
+type keccakState interface {
+	hash.Hash
+	Read([]byte) (int, error)
+}
+
 //OVM解释器
 type OVMInterpreter struct {
 	ovm *OVM
 	cfg Config
 
-	//hasher    keccakState // Keccak256 实例跨操作码共享
+	hasher    keccakState // Keccak256 实例跨操作码共享
 	hasherBuf entity.Hash // Keccak256 hasher 结果数组共享aross操作码
 
 	readOnly   bool   //是否只读
@@ -36,40 +44,40 @@ type ScopeContext struct {
 }
 
 func NewOVMInterpreter(ovm *OVM, cfg Config) *OVMInterpreter {
-	// If jump table was not initialised we set the default one.
-	//if cfg.JumpTable == nil {
-	//	switch {
-	//	case evm.chainRules.IsMerge:
-	//		cfg.JumpTable = &mergeInstructionSet
-	//	case evm.chainRules.IsLondon:
-	//		cfg.JumpTable = &londonInstructionSet
-	//	case evm.chainRules.IsBerlin:
-	//		cfg.JumpTable = &berlinInstructionSet
-	//	case evm.chainRules.IsIstanbul:
-	//		cfg.JumpTable = &istanbulInstructionSet
-	//	case evm.chainRules.IsConstantinople:
-	//		cfg.JumpTable = &constantinopleInstructionSet
-	//	case evm.chainRules.IsByzantium:
-	//		cfg.JumpTable = &byzantiumInstructionSet
-	//	case evm.chainRules.IsEIP158:
-	//		cfg.JumpTable = &spuriousDragonInstructionSet
-	//	case evm.chainRules.IsEIP150:
-	//		cfg.JumpTable = &tangerineWhistleInstructionSet
-	//	case evm.chainRules.IsHomestead:
-	//		cfg.JumpTable = &homesteadInstructionSet
-	//	default:
-	//		cfg.JumpTable = &frontierInstructionSet
-	//	}
-	//	for i, eip := range cfg.ExtraEips {
-	//		copy := *cfg.JumpTable
-	//		if terr := EnableEIP(eip, &copy); terr != nil {
-	//			// Disable it, so caller can check if it's activated or not
-	//			cfg.ExtraEips = append(cfg.ExtraEips[:i], cfg.ExtraEips[i+1:]...)
-	//			log.Error("EIP activation failed", "eip", eip, "terr", terr)
-	//		}
-	//		cfg.JumpTable = &copy
-	//	}
-	//}
+	// 如果未初始化跳转表，则将其设置为默认值。
+	if cfg.JumpTable == nil {
+		switch {
+		case ovm.chainRules.IsMerge:
+			cfg.JumpTable = &mergeInstructionSet
+		case ovm.chainRules.IsLondon:
+			cfg.JumpTable = &londonInstructionSet
+		case ovm.chainRules.IsBerlin:
+			cfg.JumpTable = &berlinInstructionSet
+		case ovm.chainRules.IsIstanbul:
+			cfg.JumpTable = &istanbulInstructionSet
+		case ovm.chainRules.IsConstantinople:
+			cfg.JumpTable = &constantinopleInstructionSet
+		case ovm.chainRules.IsByzantium:
+			cfg.JumpTable = &byzantiumInstructionSet
+		case ovm.chainRules.IsEIP158:
+			cfg.JumpTable = &spuriousDragonInstructionSet
+		case ovm.chainRules.IsEIP150:
+			cfg.JumpTable = &tangerineWhistleInstructionSet
+		case ovm.chainRules.IsHomestead:
+			cfg.JumpTable = &homesteadInstructionSet
+		default:
+			cfg.JumpTable = &frontierInstructionSet
+		}
+		for i, eip := range cfg.ExtraEips {
+			copy := *cfg.JumpTable
+			if terr := EnableEIP(eip, &copy); terr != nil {
+				// 禁用它，以便调用者可以检查它是否被激活
+				cfg.ExtraEips = append(cfg.ExtraEips[:i], cfg.ExtraEips[i+1:]...)
+				log.Error("EIP activation failed", "eip", eip, "terr", terr)
+			}
+			cfg.JumpTable = &copy
+		}
+	}
 
 	return &OVMInterpreter{
 		ovm: ovm,
@@ -95,9 +103,9 @@ func (in *OVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	}
 
 	var (
-		op          operationutils.OpCode // current opcode
-		mem         = NewMemory()         //绑定内存
-		stack       = newstack()          // 本地堆栈
+		op          OpCode        // current opcode
+		mem         = NewMemory() //绑定内存
+		stack       = newstack()  // 本地堆栈
 		callContext = &ScopeContext{
 			Memory:   mem,
 			Stack:    stack,

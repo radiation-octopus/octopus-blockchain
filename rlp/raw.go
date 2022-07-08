@@ -1,7 +1,6 @@
 package rlp
 
 import (
-	"fmt"
 	"io"
 	"reflect"
 	"unsafe"
@@ -134,7 +133,6 @@ func CountValues(b []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		fmt.Println(tagsize + size)
 		b = b[tagsize+size:]
 	}
 	return i, nil

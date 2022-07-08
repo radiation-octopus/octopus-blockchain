@@ -145,7 +145,7 @@ func (o *OperationDB) SubBalance(address entity.Address, amount *big.Int) {
 //headerTDMark将金额添加到与addr关联的帐户。
 func (o *OperationDB) AddBalance(address entity.Address, amount *big.Int) {
 	operationObject := o.GetOrNewOperationObject(address)
-	fmt.Println("add", operationObject.Address().String())
+	//fmt.Println("add", operationObject.Address().String())
 	if operationObject != nil {
 		operationObject.AddBalance(amount)
 	}
@@ -468,9 +468,9 @@ func (o *OperationDB) getOperationObject(addr entity.Address) *OperationObject {
 //状态日志需要这样才能恢复到正确的s-destructed对象，而不是擦除关于状态对象的所有知识。
 func (o *OperationDB) getDeletedOperationObject(addr entity.Address) *OperationObject {
 	// 首选活动对象（如果有）
-	//if obj := o.OperationObjects[addr]; obj != nil {
-	//	return obj
-	//}
+	if obj := o.OperationObjects[addr]; obj != nil {
+		return obj
+	}
 	// 如果没有可用的活动对象，请尝试使用快照
 	var data *entity.StateAccount
 	//if o.snap != nil {

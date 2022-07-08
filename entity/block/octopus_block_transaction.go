@@ -5,8 +5,8 @@ import (
 	"container/heap"
 	"errors"
 	"fmt"
-	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
 	"sync/atomic"
@@ -97,9 +97,9 @@ func (tx *Transaction) Hash() entity.Hash {
 	}
 	var h entity.Hash
 	if tx.Type() == LegacyTxType {
-		h = crypto.RlpHash(tx.inner)
+		h = RlpHash(tx.inner)
 	} else {
-		h = crypto.PrefixedRlpHash(tx.Type(), tx.inner)
+		h = PrefixedRlpHash(tx.Type(), tx.inner)
 	}
 	tx.hash.Store(h)
 	return h
@@ -107,9 +107,8 @@ func (tx *Transaction) Hash() entity.Hash {
 
 //encodeTyped将类型化事务的规范编码写入w。
 func (tx *Transaction) encodeTyped(w *bytes.Buffer) error {
-	//w.WriteByte(tx.Type())
-	//return rlp.Encode(w, tx.inner)
-	return nil
+	w.WriteByte(tx.Type())
+	return rlp.Encode(w, tx.inner)
 }
 
 // EffectiveGasTip返回给定基本费用的有工作者gasticpap。注意：如果有效gasTipCap为负值，此方法将同时返回实际负值error和ErrGasFeeCapTooLow
@@ -270,6 +269,24 @@ func TxDifference(a, b Transactions) Transactions {
 	for _, tx := range a {
 		if _, ok := remove[tx.Hash()]; !ok {
 			keep = append(keep, tx)
+		}
+	}
+
+	return keep
+}
+
+// HashDifference返回一个新集，即a和b之间的差。
+func HashDifference(a, b []entity.Hash) []entity.Hash {
+	keep := make([]entity.Hash, 0, len(a))
+
+	remove := make(map[entity.Hash]struct{})
+	for _, hash := range b {
+		remove[hash] = struct{}{}
+	}
+
+	for _, hash := range a {
+		if _, ok := remove[hash]; !ok {
+			keep = append(keep, hash)
 		}
 	}
 

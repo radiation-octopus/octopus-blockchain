@@ -171,10 +171,9 @@ func (c *committer) store(n node, db *TrieDatabase) node {
 		size    int
 	)
 	if hash == nil {
-		// This was not generated - must be a small node stored in the parent.
-		// In theory, we should apply the leafCall here if it's not nil(embedded
-		// node usually contains value). But small value(less than 32bytes) is
-		// not our target.
+		// 这不是生成的-必须是存储在父节点中的小节点。
+		//理论上，如果不是nil（嵌入节点通常包含值），我们应该在这里应用leafCall。
+		//但小值（小于32字节）不是我们的目标。
 		return n
 	} else {
 		// 我们已经有了哈希，估计节点的RLP编码大小。

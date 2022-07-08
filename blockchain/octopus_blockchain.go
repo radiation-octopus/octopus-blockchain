@@ -3,6 +3,7 @@ package blockchain
 import (
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/common/prque"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/radiation-octopus/octopus-blockchain/blockchain/blockchainconfig"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
@@ -15,6 +16,7 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/oct/octconfig"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb/tire"
+	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
 	"github.com/radiation-octopus/octopus-blockchain/vm"
 	"github.com/radiation-octopus/octopus/log"
@@ -25,7 +27,9 @@ import (
 )
 
 const (
-	maxFutureBlocks = 256
+	maxFutureBlocks     = 256
+	maxTimeFutureBlocks = 30
+	TriesInMemory       = 128
 )
 
 // CacheConfig包含驻留在区块链中的trie缓存/精简的配置值。
@@ -48,10 +52,14 @@ type BlockChain struct {
 	chainConfig *entity.ChainConfig // 链和网络配置
 	cacheConfig *CacheConfig        // 精简的缓存配置
 
-	db typedb.Database //数据库
+	db     typedb.Database //数据库
+	triegc *prque.Prque    // 将块号映射到尝试gc的优先级队列
+	gcproc time.Duration   // 累积trie转储的规范块处理
 
 	TxLookupLimit uint64 //`autoInjectCfg:"octopus.blockchain.binding.genesis.header.txLookupLimit"` //一个区块容纳最大交易限制
 	hc            *HeaderChain
+
+	chainFeed     event.Feed
 	chainHeadFeed event.Feed
 	blockProcFeed event.Feed //区块过程注入事件
 	scope         event.SubscriptionScope
@@ -170,7 +178,7 @@ func (bc *BlockChain) start(node *node.Node, config *octconfig.Config) {
 	}
 	var cacheConfig = &CacheConfig{
 		//TrieCleanLimit:      config.TrieCleanCache,
-		////TrieCleanJournal:    stack.ResolvePath(config.TrieCleanCacheJournal),
+		//TrieCleanJournal:    stack.ResolvePath(config.TrieCleanCacheJournal),
 		//TrieCleanRejournal:  config.TrieCleanCacheRejournal,
 		//TrieCleanNoPrefetch: config.NoPrefetch,
 		//TrieDirtyLimit:      config.TrieDirtyCache,
@@ -212,6 +220,7 @@ func newBlockChain(bc *BlockChain, cacheConfig *CacheConfig, chainConfig *entity
 	bc.engine = engine
 	bc.chainConfig = chainConfig
 	bc.cacheConfig = cacheConfig
+	bc.triegc = prque.New(nil)
 	//bc = &BlockChain{
 	//	db:   db,
 	//	quit: make(chan struct{}),
@@ -224,7 +233,7 @@ func newBlockChain(bc *BlockChain, cacheConfig *CacheConfig, chainConfig *entity
 	//	futureBlocks: futureBlocks,
 	//	engine:       engine,
 	//}
-	//bc.forker = NewForkChoice(bc, shouldPreserve)
+	bc.forker = NewForkChoice(bc, shouldPreserve)
 	bc.operationCache = operationdb.NewDatabaseWithConfig(bc.db, &tire.Config{
 		//Cache:     cacheConfig.TrieCleanLimit,
 		//Journal:   cacheConfig.TrieCleanJournal,
@@ -490,6 +499,19 @@ func (bc *BlockChain) insertChain(chain Blocks, verifySeals, setHead bool) (int,
 	switch status {
 
 	}
+	// 这里还有街区吗？我们唯一关心的是未来
+	if block != nil && errors.Is(err, consensus.ErrFutureBlock) {
+		if err := bc.addFutureBlock(block); err != nil {
+			return it.index, err
+		}
+		block, err = it.next()
+
+		for ; block != nil && errors.Is(err, consensus.ErrUnknownAncestor); block, err = it.next() {
+			if err := bc.addFutureBlock(block); err != nil {
+				return it.index, err
+			}
+		}
+	}
 
 	return it.index, err
 }
@@ -515,6 +537,8 @@ func (bc *BlockChain) WriteBlockAndSetHead(block *block2.Block, receipts []*bloc
 	return bc.writeBlockAndSetHead(block, receipts, logs, state, emitHeadEvent)
 }
 
+var lastWrite uint64
+
 func (bc *BlockChain) writeBlockWithState(block *block2.Block, receipts []*block2.Receipt, logs []*log.OctopusLog, operation *operationdb.OperationDB) error {
 	// 计算方块的总难度
 	ptd := bc.GetTd(block.ParentHash(), block.NumberU64()-1)
@@ -530,7 +554,7 @@ func (bc *BlockChain) writeBlockWithState(block *block2.Block, receipts []*block
 	rawdb.WriteTd(blockBatch, block.Hash(), block.NumberU64(), externTd)
 	rawdb.WriteBlock(blockBatch, block)
 	rawdb.WriteReceipts(blockBatch, block.Hash(), block.NumberU64(), receipts)
-	//operationdb.WritePreimages(blockBatch, operation.Preimages())
+	//rawdb.WritePreimages(blockBatch, operation.Preimages())
 	if terr := blockBatch.Write(); terr != nil {
 		log.Info("Failed to write block into disk", "terr", terr)
 	}
@@ -548,56 +572,279 @@ func (bc *BlockChain) writeBlockWithState(block *block2.Block, receipts []*block
 	//} else {
 	//	// 已满但未存档节点，请执行正确的垃圾收集
 	//	triedb.Reference(root, entity.Hash{}) // 保持trie活动的元数据引用
-	//	//bc.triegc.Push(root, -int64(block.NumberU64()))
-	//	//
-	//	//if current := block.NumberU64(); current > TriesInMemory {
-	//	//	// 如果超出内存允许，则将成熟的单例节点刷新到磁盘
-	//	//	var (
-	//	//		nodes, imgs = triedb.Size()
-	//	//		limit       = utils.StorageSize(bc.cacheConfig.TrieDirtyLimit) * 1024 * 1024
-	//	//	)
-	//	//	if nodes > limit || imgs > 4*1024*1024 {
-	//	//		triedb.Cap(limit - ethdb.IdealBatchSize)
-	//	//	}
-	//	//	// 找到我们需要提交的下一个状态
-	//	//	chosen := current - TriesInMemory
-	//	//
-	//	//	// 如果超出了超时限制，则将整个trie刷新到磁盘
-	//	//	if bc.gcproc > bc.cacheConfig.TrieTimeLimit {
-	//	//		// 如果缺少标头（后面是规范链），我们将重新定位低差异侧链。暂停提交，直到此操作完成。
-	//	//		header := bc.GetHeaderByNumber(chosen)
-	//	//		if header == nil {
-	//	//			log.Warn("Reorg in progress, trie commit postponed", "number", chosen)
-	//	//		} else {
-	//	//			// 如果我们超出了限制，但还没有达到足够大的内存间隙，请警告用户系统正在变得不稳定。
-	//	//			if chosen < lastWrite+TriesInMemory && bc.gcproc >= 2*bc.cacheConfig.TrieTimeLimit {
-	//	//				log.Info("State in memory for too long, committing", "time", bc.gcproc, "allowance", bc.cacheConfig.TrieTimeLimit, "optimum", float64(chosen-lastWrite)/TriesInMemory)
-	//	//			}
-	//	//			// 刷新整个trie并重新启动计数器
-	//	//			triedb.Commit(header.Root, true, nil)
-	//	//			lastWrite = chosen
-	//	//			bc.gcproc = 0
-	//	//		}
-	//	//	}
-	//	//	// 垃圾收集低于我们要求的写保留率的任何内容
-	//	//	for !bc.triegc.Empty() {
-	//	//		root, number := bc.triegc.Pop()
-	//	//		if uint64(-number) > chosen {
-	//	//			bc.triegc.Push(root, number)
-	//	//			break
-	//	//		}
-	//	//		triedb.Dereference(root.(entity.Hash))
-	//	//	}
-	//	//}
+	//	bc.triegc.Push(root, -int64(block.NumberU64()))
+	//
+	//	if current := block.NumberU64(); current > TriesInMemory {
+	//		// 如果超出内存允许，则将成熟的单例节点刷新到磁盘
+	//		var (
+	//			nodes, imgs = triedb.Size()
+	//			limit       = utils.StorageSize(bc.cacheConfig.TrieDirtyLimit) * 1024 * 1024
+	//		)
+	//		if nodes > limit || imgs > 4*1024*1024 {
+	//			triedb.Cap(limit - typedb.IdealBatchSize)
+	//		}
+	//		// 找到我们需要提交的下一个状态
+	//		chosen := current - TriesInMemory
+	//
+	//		// 如果超出了超时限制，则将整个trie刷新到磁盘
+	//		// 如果缺少标头（后面是规范链），我们将重新定位低差异侧链。暂停提交，直到此操作完成。
+	//		header := bc.GetHeaderByNumber(chosen)
+	//		if header == nil {
+	//			log.Warn("Reorg in progress, trie commit postponed", "number", chosen)
+	//		} else {
+	//			// 如果我们超出了限制，但还没有达到足够大的内存间隙，请警告用户系统正在变得不稳定。
+	//			if chosen < lastWrite+TriesInMemory && bc.gcproc >= 2*bc.cacheConfig.TrieTimeLimit {
+	//				log.Info("State in memory for too long, committing", "time", bc.gcproc, "allowance", bc.cacheConfig.TrieTimeLimit, "optimum", float64(chosen-lastWrite)/TriesInMemory)
+	//			}
+	//			// 刷新整个trie并重新启动计数器
+	//			triedb.Commit(header.Root, true, nil)
+	//			lastWrite = chosen
+	//			bc.gcproc = 0
+	//		}
+	//		//if bc.gcproc > bc.cacheConfig.TrieTimeLimit {
+	//		//	// 如果缺少标头（后面是规范链），我们将重新定位低差异侧链。暂停提交，直到此操作完成。
+	//		//	header := bc.GetHeaderByNumber(chosen)
+	//		//	if header == nil {
+	//		//		log.Warn("Reorg in progress, trie commit postponed", "number", chosen)
+	//		//	} else {
+	//		//		// 如果我们超出了限制，但还没有达到足够大的内存间隙，请警告用户系统正在变得不稳定。
+	//		//		if chosen < lastWrite+TriesInMemory && bc.gcproc >= 2*bc.cacheConfig.TrieTimeLimit {
+	//		//			log.Info("State in memory for too long, committing", "time", bc.gcproc, "allowance", bc.cacheConfig.TrieTimeLimit, "optimum", float64(chosen-lastWrite)/TriesInMemory)
+	//		//		}
+	//		//		// 刷新整个trie并重新启动计数器
+	//		//		triedb.Commit(header.Root, true, nil)
+	//		//		lastWrite = chosen
+	//		//		bc.gcproc = 0
+	//		//	}
+	//		//}
+	//		// 垃圾收集低于我们要求的写保留率的任何内容
+	//		for !bc.triegc.Empty() {
+	//			root, number := bc.triegc.Pop()
+	//			if uint64(-number) > chosen {
+	//				bc.triegc.Push(root, number)
+	//				break
+	//			}
+	//			triedb.Dereference(root.(entity.Hash))
+	//		}
+	//	}
 	//}
+	//return nil
+}
+
+// addFutureBlock检查块是否在允许的最大窗口内，以接受未来处理，如果块太超前且未添加，
+//则返回错误。过渡后的待办事项，不应保留未来的障碍。
+//因为它不再在Geth端进行检查。
+func (bc *BlockChain) addFutureBlock(block *block2.Block) error {
+	max := uint64(time.Now().Unix() + maxTimeFutureBlocks)
+	if block.Time() > max {
+		return fmt.Errorf("future block timestamp %v > allowed %v", block.Time(), max)
+	}
+	if block.Difficulty().Cmp(operationutils.Big0) == 0 {
+		// 切勿将PoS块添加到未来队列中
+		return nil
+	}
+	bc.futureBlocks.Add(block.Hash(), block)
 	return nil
 }
 
 type WriteStatus byte
 
+const (
+	NonStatTy WriteStatus = iota
+	CanonStatTy
+	SideStatTy
+)
+
+// reorg获取两个块，一个旧链和一个新链，并将重构这些块，将它们插入到新的规范链中，积累潜在的缺失事务，并发布关于它们的事件。
+//请注意，此处不会处理新的头块，呼叫者需要从外部处理。
+func (bc *BlockChain) reorg(oldBlock, newBlock *block2.Block) error {
+	var (
+		newChain    Blocks
+		oldChain    Blocks
+		commonBlock *block2.Block
+
+		deletedTxs []entity.Hash
+		addedTxs   []entity.Hash
+
+		//deletedLogs [][]*log.OctopusLog
+		//rebirthLogs [][]*log.OctopusLog
+	)
+	// 将长链减少到与短链相同的数量
+	if oldBlock.NumberU64() > newBlock.NumberU64() {
+		// 旧链较长，将所有事务和日志收集为已删除的事务和日志
+		for ; oldBlock != nil && oldBlock.NumberU64() != newBlock.NumberU64(); oldBlock = bc.GetBlock(oldBlock.ParentHash(), oldBlock.NumberU64()-1) {
+			oldChain = append(oldChain, oldBlock)
+			for _, tx := range oldBlock.Transactions() {
+				deletedTxs = append(deletedTxs, tx.Hash())
+			}
+
+			// 收集已删除的日志以进行通知
+			//logs := bc.collectLogs(oldBlock.Hash(), true)
+			//if len(logs) > 0 {
+			//	deletedLogs = append(deletedLogs, logs)
+			//}
+		}
+	} else {
+		// 新链更长，将所有块隐藏起来以备后续插入
+		for ; newBlock != nil && newBlock.NumberU64() != oldBlock.NumberU64(); newBlock = bc.GetBlock(newBlock.ParentHash(), newBlock.NumberU64()-1) {
+			newChain = append(newChain, newBlock)
+		}
+	}
+	if oldBlock == nil {
+		return fmt.Errorf("invalid old chain")
+	}
+	if newBlock == nil {
+		return fmt.Errorf("invalid new chain")
+	}
+	// reorg的两边都是相同的数字，减少两边，直到找到共同的祖先
+	for {
+		// 如果找到了共同的祖先，就退出
+		if oldBlock.Hash() == newBlock.Hash() {
+			commonBlock = oldBlock
+			break
+		}
+		// 移除旧块并隐藏新块
+		oldChain = append(oldChain, oldBlock)
+		for _, tx := range oldBlock.Transactions() {
+			deletedTxs = append(deletedTxs, tx.Hash())
+		}
+
+		// 收集已删除的日志以进行通知
+		//logs := bc.collectLogs(oldBlock.Hash(), true)
+		//if len(logs) > 0 {
+		//	deletedLogs = append(deletedLogs, logs)
+		//}
+		newChain = append(newChain, newBlock)
+
+		// 用两条链条后退
+		oldBlock = bc.GetBlock(oldBlock.ParentHash(), oldBlock.NumberU64()-1)
+		if oldBlock == nil {
+			return fmt.Errorf("invalid old chain")
+		}
+		newBlock = bc.GetBlock(newBlock.ParentHash(), newBlock.NumberU64()-1)
+		if newBlock == nil {
+			return fmt.Errorf("invalid new chain")
+		}
+	}
+
+	// 确保用户看到较大的REORG
+	if len(oldChain) > 0 && len(newChain) > 0 {
+		logFn := log.Info
+		msg := "Chain reorg detected"
+		if len(oldChain) > 63 {
+			msg = "Large chain reorg detected"
+			logFn = log.Warn
+		}
+		logFn(msg, "number", commonBlock.Number(), "hash", commonBlock.Hash(),
+			"drop", len(oldChain), "dropfrom", oldChain[0].Hash(), "add", len(newChain), "addfrom", newChain[0].Hash())
+		//blockReorgAddMeter.Mark(int64(len(newChain)))
+		//blockReorgDropMeter.Mark(int64(len(oldChain)))
+		//blockReorgMeter.Mark(1)
+	} else if len(newChain) > 0 {
+		// 特殊情况发生在合并后阶段，当前头是新头的祖先，而这两个块不是连续的
+		log.Info("Extend chain", "add", len(newChain), "number", newChain[0].Number(), "hash", newChain[0].Hash())
+		//blockReorgAddMeter.Mark(int64(len(newChain)))
+	} else {
+		// len(newChain) == 0 && len(oldChain) > 0
+		// 将正则链倒带到较低的点。
+		log.Error("Impossible reorg, please file an issue", "oldnum", oldBlock.Number(), "oldhash", oldBlock.Hash(), "oldblocks", len(oldChain), "newnum", newBlock.Number(), "newhash", newBlock.Hash(), "newblocks", len(newChain))
+	}
+	// 插入新链（头块除外（逆序）），注意正确的增量顺序。
+	for i := len(newChain) - 1; i >= 1; i-- {
+		// 以规范的方式插入块，重新写入历史
+		bc.writeHeadBlock(newChain[i])
+
+		// 收集新添加的事务。
+		for _, tx := range newChain[i].Transactions() {
+			addedTxs = append(addedTxs, tx.Hash())
+		}
+	}
+
+	// 立即删除无用的索引，其中包括非规范事务索引、规范链索引。
+	indexesBatch := bc.db.NewBatch()
+	for _, tx := range block2.HashDifference(deletedTxs, addedTxs) {
+		rawdb.DeleteTxLookupEntry(indexesBatch, tx)
+	}
+
+	// 删除所有不属于新规范链的哈希标记。由于reorg函数不处理新链头，因此应删除所有大于或等于新链头的哈希标记。
+	number := commonBlock.NumberU64()
+	if len(newChain) > 1 {
+		number = newChain[1].NumberU64()
+	}
+	for i := number + 1; ; i++ {
+		hash := rawdb.ReadCanonicalHash(bc.db, i)
+		if hash == (entity.Hash{}) {
+			break
+		}
+		rawdb.DeleteCanonicalHash(indexesBatch, i)
+	}
+	if err := indexesBatch.Write(); err != nil {
+		log.Info("Failed to delete useless indexes", "err", err)
+	}
+
+	// 收集日志
+	//for i := len(newChain) - 1; i >= 1; i-- {
+	//	// 收集因链重组而重新生成的日志
+	//	logs := bc.collectLogs(newChain[i].Hash(), false)
+	//	if len(logs) > 0 {
+	//		rebirthLogs = append(rebirthLogs, logs)
+	//	}
+	//}
+	//// 如果需要触发任何日志，请立即启动。
+	////理论上，如果没有要触发的事件，我们可以避免创建这种goroutine，但实际上，只有在重新定位空块时才会发生这种情况，
+	////而这只会发生在性能不成问题的空闲网络上。
+	//if len(deletedLogs) > 0 {
+	//	bc.rmLogsFeed.Send(RemovedLogsEvent{mergeLogs(deletedLogs, true)})
+	//}
+	//if len(rebirthLogs) > 0 {
+	//	bc.logsFeed.Send(mergeLogs(rebirthLogs, false))
+	//}
+	//if len(oldChain) > 0 {
+	//	for i := len(oldChain) - 1; i >= 0; i-- {
+	//		bc.chainSideFeed.Send(ChainSideEvent{Block: oldChain[i]})
+	//	}
+	//}
+	return nil
+}
+
 func (bc *BlockChain) writeBlockAndSetHead(block *block2.Block, receipts []*block2.Receipt, logs []*log.OctopusLog, state *operationdb.OperationDB, emitHeadEvent bool) (status WriteStatus, err error) {
 	if err := bc.writeBlockWithState(block, receipts, logs, state); err != nil {
-		return 0, err
+		return NonStatTy, err
 	}
-	return 1, nil
+	currentBlock := bc.CurrentBlock()
+	reorg, err := bc.forker.ReorgNeeded(currentBlock.Header(), block.Header())
+	if err != nil {
+		return NonStatTy, err
+	}
+	if reorg {
+		// 如果父对象不是头块，则重新组织链
+		if block.ParentHash() != currentBlock.Hash() {
+			if err := bc.reorg(currentBlock, block); err != nil {
+				return NonStatTy, err
+			}
+		}
+		status = CanonStatTy
+	} else {
+		status = SideStatTy
+	}
+	// 设置新头。
+	if status == CanonStatTy {
+		bc.writeHeadBlock(block)
+	}
+	bc.futureBlocks.Remove(block.Hash())
+
+	if status == CanonStatTy {
+		bc.chainFeed.Send(event.ChainEvent{Block: block, Hash: block.Hash(), Logs: logs})
+		//if len(logs) > 0 {
+		//	bc.logsFeed.Send(logs)
+		//}
+		// 理论上，我们应该在注入规范块时触发ChainHeadEvent，但有时我们可以插入一批规范块。
+		//避免触发过多的ChainHeadEvents，我们将触发累积的ChainHeadEvent并在此处禁用fire事件。
+		if emitHeadEvent {
+			bc.chainHeadFeed.Send(event.ChainHeadEvent{Block: block})
+		}
+	} else {
+		//bc.chainSideFeed.Send(ChainSideEvent{Block: block})
+	}
+	return status, nil
 }

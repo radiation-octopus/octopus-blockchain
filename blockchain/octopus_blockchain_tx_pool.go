@@ -442,7 +442,7 @@ func (pool *TxPool) reset(oldHead, newHead *block2.Header) {
 	pool.currentMaxGas = newHead.GasLimit
 
 	// 注入因reorgs而丢弃的任何事务
-	log.Debug("Reinjecting stale transactions", "count", len(reinject))
+	//log.Debug("Reinjecting stale transactions", "count", len(reinject))
 	senderCacher.recover(pool.signer, reinject)
 	pool.addTxsLocked(reinject, false)
 
@@ -1156,7 +1156,7 @@ func (pool *TxPool) loop() {
 		select {
 		// 处理ChainHeadEvent
 		case ev := <-pool.chainHeadCh:
-			log.Debug("循环处理chainhead")
+			//123log.Debug("循环处理chainhead")
 			if ev.Block != nil {
 				pool.requestReset(head.Header(), ev.Block.Header())
 				head = ev.Block
@@ -1530,12 +1530,12 @@ func (l *txList) LastElement() *block2.Transaction {
 
 // Remove从维护的列表中删除事务，返回是否找到该事务，并返回由于删除而无效的任何事务（仅限严格模式）。
 func (l *txList) Remove(tx *block2.Transaction) (bool, block2.Transactions) {
-	// Remove the transaction from the set
+	// 从集合中删除事务
 	nonce := tx.Nonce()
 	if removed := l.txs.Remove(nonce); !removed {
 		return false, nil
 	}
-	// In strict mode, filter out non-executable transactions
+	// 在严格模式下，过滤掉不可执行的事务
 	if l.strict {
 		return true, l.txs.Filter(func(tx *block2.Transaction) bool { return tx.Nonce() > nonce })
 	}
@@ -1621,7 +1621,7 @@ func (m *txSortedMap) Forward(threshold uint64) block2.Transactions {
 		removed = append(removed, m.items[nonce])
 		delete(m.items, nonce)
 	}
-	// If we had a cached order, shift the front
+	// 如果我们有一个缓存的订单，移动前端
 	if m.cache != nil {
 		m.cache = m.cache[len(removed):]
 	}

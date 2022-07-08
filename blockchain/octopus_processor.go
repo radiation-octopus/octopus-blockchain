@@ -14,14 +14,15 @@ import (
 
 //处理器结构体
 type BlockProcessor struct {
-	//config *entity.ChainConfig // 链配置
-	bc     *BlockChain      // 标准链
-	engine consensus.Engine // 共识引擎
+	config *entity.ChainConfig // 链配置
+	bc     *BlockChain         // 标准链
+	engine consensus.Engine    // 共识引擎
 }
 
 //构建处理器
 func NewBlockProcessor(bc *BlockChain, engine consensus.Engine) *BlockProcessor {
 	bp := &BlockProcessor{
+		config: bc.chainConfig,
 		bc:     bc,
 		engine: engine,
 	}
@@ -46,7 +47,7 @@ func (p *BlockProcessor) Process(b *block2.Block, operationdb *operationdb.Opera
 	)
 	blockContext := vm.NewOVMBlockContext(header, p.bc, nil)
 	//初始化虚拟机
-	vmonv := vm.NewOVM(blockContext, vm.TxContext{}, operationdb, cfg)
+	vmonv := vm.NewOVM(blockContext, vm.TxContext{}, operationdb, p.config, cfg)
 	for i, tx := range b.Transactions() {
 		msg, err := tx.AsMessage(block2.MakeSigner(header.Number), header.BaseFee)
 		if err != nil {
@@ -57,7 +58,7 @@ func (p *BlockProcessor) Process(b *block2.Block, operationdb *operationdb.Opera
 			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
 		receipts = append(receipts, receipt)
-		allLogs = append(allLogs, receipt.Logs...)
+		//allLogs = append(allLogs, receipt.Logs...)
 	}
 
 	return receipts, allLogs, *usedGas, nil
@@ -87,13 +88,13 @@ func applyTransaction(msg block2.Message, gp *transition.GasPool, operationdb *o
 }
 
 // ApplyTransaction尝试将事务应用于给定的状态数据库，并使用其环境的输入参数。如果交易失败，则返回交易收据、使用的天然气和terr，表明阻塞无效。
-func ApplyTransaction(bc vm.ChainContext, author *entity.Address, gp *transition.GasPool, operationdb *operationdb.OperationDB, header *block2.Header, tx *block2.Transaction, usedGas *uint64, cfg vm.Config) (*block2.Receipt, error) {
+func ApplyTransaction(config *entity.ChainConfig, bc vm.ChainContext, author *entity.Address, gp *transition.GasPool, operationdb *operationdb.OperationDB, header *block2.Header, tx *block2.Transaction, usedGas *uint64, cfg vm.Config) (*block2.Receipt, error) {
 	msg, err := tx.AsMessage(block2.MakeSigner(header.Number), header.BaseFee)
 	if err != nil {
 		return nil, err
 	}
 	// 创建要在EVM环境中使用的新配置
 	blockContext := vm.NewOVMBlockContext(header, bc, author)
-	vmenv := vm.NewOVM(blockContext, vm.TxContext{}, operationdb, cfg)
+	vmenv := vm.NewOVM(blockContext, vm.TxContext{}, operationdb, config, cfg)
 	return applyTransaction(msg, gp, operationdb, header.Number, header.Hash(), tx, usedGas, vmenv)
 }

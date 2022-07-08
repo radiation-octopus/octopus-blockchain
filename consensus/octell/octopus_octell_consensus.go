@@ -10,6 +10,7 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb/tire"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus/log"
@@ -487,7 +488,7 @@ func (o *Octell) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *
 	o.Finalize(chain, header, ob, txs, uncles)
 
 	// 收割台似乎已完成，组装成块并返回
-	return block2.NewBlock(header, txs, receipts), nil
+	return block2.NewBlock(header, txs, receipts, tire.NewStackTrie(nil)), nil
 }
 
 // Finalize实现共识。引擎，累积积木和叔叔奖励，设置标题的最终状态

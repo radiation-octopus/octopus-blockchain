@@ -2,6 +2,7 @@ package tire
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
@@ -92,6 +93,8 @@ func (t *Trie) TryGet(key []byte) ([]byte, error) {
 	if err == nil && didResolve {
 		t.root = newroot
 	}
+	//_,dir := t.root.cache()
+	//fmt.Println(dir)
 	return value, err
 }
 
@@ -376,7 +379,8 @@ func (t *Trie) Commit(onleaf LeafCallback) (entity.Hash, int, error) {
 	rootHash := t.Hash()
 	h := newCommitter()
 	defer returnCommitterToPool(h)
-
+	//_,dir := t.root.cache()
+	//123fmt.Println(dir)
 	// 在启动goroutines之前，如果我们真的需要提交，请快速检查一下。这可能会发生，例如，如果我们加载一个用于读取存储值的trie，但不向其写入。
 	if hashedNode, dirty := t.root.cache(); !dirty {
 		// 用源哈希替换根节点，以确保在提交后删除所有已解析的节点。
@@ -404,6 +408,81 @@ func (t *Trie) Commit(onleaf LeafCallback) (entity.Hash, int, error) {
 	}
 	t.root = newRoot
 	return rootHash, committed, nil
+}
+
+// TryGetNode尝试通过压缩编码路径检索trie节点。由于路径可能包含奇数个半字节，因此无法使用密钥字节编码。
+func (t *Trie) TryGetNode(path []byte) ([]byte, int, error) {
+	item, newroot, resolved, err := t.tryGetNode(t.root, compactToHex(path), 0)
+	if err != nil {
+		return nil, resolved, err
+	}
+	if resolved > 0 {
+		t.root = newroot
+	}
+	if item == nil {
+		return nil, resolved, nil
+	}
+	return item, resolved, err
+}
+
+func (t *Trie) tryGetNode(origNode node, path []byte, pos int) (item []byte, newnode node, resolved int, err error) {
+	// 如果请求的路径不存在，则中止
+	if origNode == nil {
+		return nil, nil, 0, nil
+	}
+	// 如果我们到达了请求的路径，则返回当前节点
+	if pos >= len(path) {
+		// 虽然我们很可能扩展了原始节点，但将其编码为共识形式可能会很麻烦（需要级联），而且耗时。
+		//相反，只需直接从磁盘中提取哈希值。
+		var hash hashNode
+		if node, ok := origNode.(hashNode); ok {
+			hash = node
+		} else {
+			hash, _ = origNode.cache()
+		}
+		if hash == nil {
+			return nil, origNode, 0, errors.New("non-consensus node")
+		}
+		blob, err := t.db.Node(entity.BytesToHash(hash))
+		return blob, origNode, 1, err
+	}
+	// 路还需要走，下到孩子
+	switch n := (origNode).(type) {
+	case valueNode:
+		// 路径过早结束，中止
+		return nil, nil, 0, nil
+
+	case *shortNode:
+		if len(path)-pos < len(n.Key) || !bytes.Equal(n.Key, path[pos:pos+len(n.Key)]) {
+			// Path branches off from short node
+			return nil, n, 0, nil
+		}
+		item, newnode, resolved, err = t.tryGetNode(n.Val, path, pos+len(n.Key))
+		if err == nil && resolved > 0 {
+			n = n.copy()
+			n.Val = newnode
+		}
+		return item, n, resolved, err
+
+	case *fullNode:
+		item, newnode, resolved, err = t.tryGetNode(n.Children[path[pos]], path, pos+1)
+		if err == nil && resolved > 0 {
+			n = n.copy()
+			n.Children[path[pos]] = newnode
+		}
+		return item, n, resolved, err
+
+	case hashNode:
+		child, err := t.resolveHash(n, path[:pos])
+		if err != nil {
+			return nil, n, 1, err
+		}
+		item, newnode, resolved, err := t.tryGetNode(child, path, pos)
+		return item, newnode, resolved + 1, err
+
+	default:
+		panic(fmt.Sprintf("%T: invalid node: %v", origNode, origNode))
+	}
 }
 
 // NewSecure使用备份数据库中的现有根节点和内存节点池中的可选中间节点创建一个trie。
@@ -492,8 +571,12 @@ func (t *SecureTrie) Commit(onleaf LeafCallback) (entity.Hash, int, error) {
 	return t.trie.Commit(onleaf)
 }
 
+// TryGetNode尝试通过压缩编码路径检索trie节点。由于路径可能包含奇数个半字节，因此无法使用密钥字节编码。
+func (t *SecureTrie) TryGetNode(path []byte) ([]byte, int, error) {
+	return t.trie.TryGetNode(path)
+}
+
 func (s *SecureTrie) TryGet(key []byte) ([]byte, error) {
-	fmt.Println("TryGet:", key)
 	return s.trie.TryGet(s.hashKey(key))
 }
 

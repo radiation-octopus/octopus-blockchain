@@ -144,7 +144,7 @@ func (fs FrontierSigner) SignatureValues(tx *Transaction, sig []byte) (r, s, v *
 
 // 散列返回要由发送方签名的散列。它不能唯一标识事务。
 func (fs FrontierSigner) Hash(tx *Transaction) entity.Hash {
-	return crypto.RlpHash([]interface{}{
+	return RlpHash([]interface{}{
 		tx.Nonce(),
 		tx.GasPrice(),
 		tx.Gas(),
@@ -212,7 +212,7 @@ func (s eip2930Signer) Sender(tx *Transaction) (entity.Address, error) {
 func (s eip2930Signer) Hash(tx *Transaction) entity.Hash {
 	switch tx.Type() {
 	case LegacyTxType:
-		return crypto.RlpHash([]interface{}{
+		return RlpHash([]interface{}{
 			tx.Nonce(),
 			tx.GasPrice(),
 			tx.Gas(),
@@ -222,7 +222,7 @@ func (s eip2930Signer) Hash(tx *Transaction) entity.Hash {
 			s.chainId, uint(0), uint(0),
 		})
 	case AccessListTxType:
-		return crypto.PrefixedRlpHash(
+		return PrefixedRlpHash(
 			tx.Type(),
 			[]interface{}{
 				s.chainId,
@@ -297,7 +297,7 @@ func (s londonSigner) Hash(tx *Transaction) entity.Hash {
 	if tx.Type() != DynamicFeeTxType {
 		return s.eip2930Signer.Hash(tx)
 	}
-	return crypto.PrefixedRlpHash(
+	return PrefixedRlpHash(
 		tx.Type(),
 		[]interface{}{
 			s.chainId,

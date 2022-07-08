@@ -59,7 +59,7 @@ func Encode(w io.Writer, val interface{}) error {
 	return buf.writeTo(w)
 }
 
-// EncodeToBytes返回val的RLP编码。有关编码规则，请参阅包级文档。
+// EncodeToBytes返回val的RLP编码。
 func EncodeToBytes(val interface{}) ([]byte, error) {
 	buf := getEncBuffer()
 	defer encBufferPool.Put(buf)

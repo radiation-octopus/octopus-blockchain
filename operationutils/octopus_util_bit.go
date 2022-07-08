@@ -76,6 +76,30 @@ func Hex2Bytes(str string) []byte {
 	return h
 }
 
+// RightPadBytes零焊盘向右切片，长度l。
+func RightPadBytes(slice []byte, l int) []byte {
+	if l <= len(slice) {
+		return slice
+	}
+
+	padded := make([]byte, l)
+	copy(padded, slice)
+
+	return padded
+}
+
+// LeftPadBytes零焊盘向左切片，长度l。
+func LeftPadBytes(slice []byte, l int) []byte {
+	if l <= len(slice) {
+		return slice
+	}
+
+	padded := make([]byte, l)
+	copy(padded[l-len(slice):], slice)
+
+	return padded
+}
+
 // 作为带有0x前缀的JSON字符串的大封送/解封送。零值封送为“0x0”。
 //此时不支持负整数。尝试封送它们将返回错误。大于256bits的值将被Unmarshal拒绝，但将被封送而不会出错。
 type Big big.Int

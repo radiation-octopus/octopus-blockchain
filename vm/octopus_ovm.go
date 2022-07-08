@@ -55,9 +55,9 @@ type OVM struct {
 	depth int
 
 	//链信息
-	//chainConfig *entity.ChainConfig
-	// 链规则
-	//chainRules params.Rules
+	chainConfig *entity.ChainConfig
+	//链规则
+	chainRules entity.Rules
 	// 初始化虚拟机配置选项
 	Config Config
 	// 整个事务中使用的全局辐射章鱼虚拟机
@@ -124,12 +124,14 @@ type StateDB interface {
 	ForEachStorage(entity.Address, func(entity.Hash, entity.Hash) bool) error
 }
 
-func NewOVM(blockCtx BlockContext, txCtx TxContext, operation *operationdb.OperationDB, config Config) *OVM {
+func NewOVM(blockCtx BlockContext, txCtx TxContext, operation *operationdb.OperationDB, chainConfig *entity.ChainConfig, config Config) *OVM {
 	evm := &OVM{
 		Context:     blockCtx,
 		TxContext:   txCtx,
 		Operationdb: operation,
 		Config:      config,
+		chainConfig: chainConfig,
+		chainRules:  chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil),
 	}
 	evm.interpreter = NewOVMInterpreter(evm, config)
 	return evm
@@ -182,6 +184,12 @@ func NewEVMTxContext(msg block2.Message) TxContext {
 	}
 }
 
+// Create使用代码作为部署代码创建新合同。
+//func (ovm *OVM) Create(caller ContractRef, code []byte, gas uint64, value *big.Int) (ret []byte, contractAddr entity.Address, leftOverGas uint64, err error) {
+//	contractAddr = crypto.CreateAddress(caller.Address(), ovm.Operationdb.GetNonce(caller.Address()))
+//	return ovm.create(caller, &codeAndHash{code: code}, gas, value, contractAddr, CREATE)
+//}
+
 func (ovm *OVM) Call(caller ContractRef, addr entity.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	//深度限制
 	if ovm.depth > int(entity.CallCreateDepth) {
@@ -189,27 +197,113 @@ func (ovm *OVM) Call(caller ContractRef, addr entity.Address, input []byte, gas 
 	}
 	fmt.Println("from:", caller.Address().String())
 	fmt.Println("to:", addr.String())
-	ovm.Context.Transfer(ovm.Operationdb, caller.Address(), addr, value)
+	//ovm.Operationdb.Database().TrieDB().
+	//ovm.Operationdb.Database().TrieDB().Node()
 	ovm.Context.CanTransfer(ovm.Operationdb, addr, big.NewInt(20))
-
+	ovm.Context.Transfer(ovm.Operationdb, caller.Address(), addr, value)
 	p, isPrecompile := ovm.precompile(addr)
 	if isPrecompile {
 		ret, gas, err = RunPrecompiledContract(p, input, gas)
 	} else {
 		// 初始化新合同并设置EVM要使用的代码
 		code := ovm.Operationdb.GetCode(addr)
-		if len(code) == 0 {
-			ret, err = nil, nil // gas不变
-		} else {
-			addrCopy := addr
-			// 如果帐户没有代码，我们可以在这里中止深度检查，并在上面处理预编译
-			contract := NewContract(caller, AccountRef(addrCopy), value, gas)
-			contract.SetCallCode(&addrCopy, ovm.Operationdb.GetCodeHash(addrCopy), code)
-			ret, err = ovm.interpreter.Run(contract, input, false)
-			gas = contract.Gas
-		}
+		addrCopy := addr
+		// 如果帐户没有代码，我们可以在这里中止深度检查，并在上面处理预编译
+		contract := NewContract(caller, AccountRef(addrCopy), value, gas)
+		contract.SetCallCode(&addrCopy, ovm.Operationdb.GetCodeHash(addrCopy), code)
+		ret, err = ovm.interpreter.Run(contract, input, false)
+		gas = contract.Gas
+		//if len(code) == 0 {
+		//	ret, err = nil, nil // gas不变
+		//} else {
+		//	addrCopy := addr
+		//	// 如果帐户没有代码，我们可以在这里中止深度检查，并在上面处理预编译
+		//	contract := NewContract(caller, AccountRef(addrCopy), value, gas)
+		//	contract.SetCallCode(&addrCopy, ovm.Operationdb.GetCodeHash(addrCopy), code)
+		//	ret, err = ovm.interpreter.Run(contract, input, false)
+		//	gas = contract.Gas
+		//}
 	}
 	return nil, 0, err
+}
+
+// CallCode使用给定的输入作为参数来执行与addr关联的契约。它还处理所需的任何必要的价值转移，并采取必要步骤创建帐户，并在执行错误或价值转移失败时反转状态。
+//CallCode与Call的不同之处在于，它以调用方作为上下文来执行给定的地址代码。
+func (ovm *OVM) CallCode(caller ContractRef, addr entity.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
+	// 如果我们试图在调用深度限制以上执行，则失败
+	if ovm.depth > int(entity.CallCreateDepth) {
+		return nil, gas, ErrDepth
+	}
+	// 如果我们试图转移超过可用余额的票据，则失败，尽管将X以太转移到调用方本身是不可能的。
+	//但若呼叫方并没有足够的余额，那个么允许过度充电本身就是一个错误。所以这里的检查是必要的。
+	if !ovm.Context.CanTransfer(ovm.Operationdb, caller.Address(), value) {
+		return nil, gas, ErrInsufficientBalance
+	}
+	var snapshot = ovm.Operationdb.Snapshot()
+
+	// 调用跟踪钩子，该钩子发出进入/退出调用帧的信号
+	//if ovm.Config.Debug {
+	//	ovm.Config.Tracer.CaptureEnter(CALLCODE, caller.Address(), addr, input, gas, value)
+	//	defer func(startGas uint64) {
+	//		ovm.Config.Tracer.CaptureExit(ret, startGas-gas, err)
+	//	}(gas)
+	//}
+
+	//允许调用预编译，即使是通过delegatecall
+	if p, isPrecompile := ovm.precompile(addr); isPrecompile {
+		ret, gas, err = RunPrecompiledContract(p, input, gas)
+	} else {
+		addrCopy := addr
+		// 初始化新合同并设置EVM使用的代码。合同仅是此执行上下文的作用域环境。
+		contract := NewContract(caller, AccountRef(caller.Address()), value, gas)
+		contract.SetCallCode(&addrCopy, ovm.Operationdb.GetCodeHash(addrCopy), ovm.Operationdb.GetCode(addrCopy))
+		ret, err = ovm.interpreter.Run(contract, input, false)
+		gas = contract.Gas
+	}
+	if err != nil {
+		ovm.Operationdb.RevertToSnapshot(snapshot)
+		if err != ErrExecutionReverted {
+			gas = 0
+		}
+	}
+	return ret, gas, err
+}
+
+// DelegateCall使用给定的输入作为参数来执行与addr关联的约定。它在执行错误时反转状态。
+//DelegateCall与CallCode的不同之处在于，它以调用者为上下文执行给定的地址代码，并且调用者被设置为调用者的调用者。
+func (ovm *OVM) DelegateCall(caller ContractRef, addr entity.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error) {
+	//如果我们试图在调用深度限制以上执行，则失败
+	if ovm.depth > int(entity.CallCreateDepth) {
+		return nil, gas, ErrDepth
+	}
+	var snapshot = ovm.Operationdb.Snapshot()
+
+	// 调用跟踪钩子，该钩子发出进入/退出调用帧的信号
+	//if ovm.Config.Debug {
+	//	ovm.Config.Tracer.CaptureEnter(DELEGATECALL, caller.Address(), addr, input, gas, nil)
+	//	defer func(startGas uint64) {
+	//		ovm.Config.Tracer.CaptureExit(ret, startGas-gas, err)
+	//	}(gas)
+	//}
+
+	// 允许调用预编译，即使是通过delegatecall
+	if p, isPrecompile := ovm.precompile(addr); isPrecompile {
+		ret, gas, err = RunPrecompiledContract(p, input, gas)
+	} else {
+		addrCopy := addr
+		// 初始化新合同，并初始化代表值
+		contract := NewContract(caller, AccountRef(caller.Address()), nil, gas).AsDelegate()
+		contract.SetCallCode(&addrCopy, ovm.Operationdb.GetCodeHash(addrCopy), ovm.Operationdb.GetCode(addrCopy))
+		ret, err = ovm.interpreter.Run(contract, input, false)
+		gas = contract.Gas
+	}
+	if err != nil {
+		ovm.Operationdb.RevertToSnapshot(snapshot)
+		if err != ErrExecutionReverted {
+			gas = 0
+		}
+	}
+	return ret, gas, err
 }
 
 func GetHashFn(ref *block2.Header, chain ChainContext) func(n uint64) entity.Hash {
@@ -257,6 +351,16 @@ func Transfer(db *operationdb.OperationDB, sender, recipient entity.Address, amo
 func (ovm *OVM) precompile(addr entity.Address) (PrecompiledContract, bool) {
 	var precompiles map[entity.Address]PrecompiledContract
 	precompiles = PrecompiledContractsHomestead
+	//switch {
+	//case ovm.chainRules.IsBerlin:
+	//	precompiles = PrecompiledContractsBerlin
+	//case ovm.chainRules.IsIstanbul:
+	//	precompiles = PrecompiledContractsIstanbul
+	//case ovm.chainRules.IsByzantium:
+	//	precompiles = PrecompiledContractsByzantium
+	//default:
+	//	precompiles = PrecompiledContractsHomestead
+	//}
 	p, ok := precompiles[addr]
 	return p, ok
 }

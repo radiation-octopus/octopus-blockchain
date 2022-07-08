@@ -73,3 +73,31 @@ func prefixLen(a, b []byte) int {
 func hasTerm(s []byte) bool {
 	return len(s) > 0 && s[len(s)-1] == 16
 }
+
+//hexToCompactInPlace将压缩键放在输入缓冲区中，返回表示所需的长度
+func hexToCompactInPlace(hex []byte) int {
+	var (
+		hexLen    = len(hex) // 十六进制输入的长度
+		firstByte = byte(0)
+	)
+	// 看看有没有终结者
+	if hexLen > 0 && hex[hexLen-1] == 16 {
+		firstByte = 1 << 5
+		hexLen-- // 最后一部分是终结者，忽略它
+	}
+	var (
+		binLen = hexLen/2 + 1
+		ni     = 0 // 十六进制索引
+		bi     = 1 // 箱子中的索引（紧凑型）
+	)
+	if hexLen&1 == 1 {
+		firstByte |= 1 << 4 // 奇数标志
+		firstByte |= hex[0] // 第一个半字节包含在第一个字节中
+		ni++
+	}
+	for ; ni < hexLen; bi, ni = bi+1, ni+2 {
+		hex[bi] = hex[ni]<<4 | hex[ni+1]
+	}
+	hex[0] = firstByte
+	return binLen
+}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationutils"
+	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"golang.org/x/crypto/sha3"
 	"hash"
 	"math/big"
@@ -81,6 +82,12 @@ func ValidateSignatureValues(v byte, r, s *big.Int, homestead bool) bool {
 	}
 	// 边疆：允许s处于全N范围
 	return r.Cmp(secp256k1N) < 0 && s.Cmp(secp256k1N) < 0 && (v == 0 || v == 1)
+}
+
+// CreateAddress在给定字节和nonce的情况下创建以太坊地址
+func CreateAddress(b entity.Address, nonce uint64) entity.Address {
+	data, _ := rlp.EncodeToBytes([]interface{}{b, nonce})
+	return entity.BytesToAddress(Keccak256(data)[12:])
 }
 
 func zeroBytes(bytes []byte) {

@@ -7,6 +7,7 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb/tire"
 	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
@@ -100,7 +101,7 @@ func (g *Genesis) ToBlock(db typedb.Database) *block.Block {
 			head.BaseFee = new(big.Int).SetUint64(entity.InitialBaseFee)
 		}
 	}
-	return block.NewBlock(head, nil, nil)
+	return block.NewBlock(head, nil, nil, tire.NewStackTrie(nil))
 }
 
 //GenesisAccount是处于genesis区块状态的帐户。
