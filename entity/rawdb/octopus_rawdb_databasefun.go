@@ -16,6 +16,18 @@ type nofreezedb struct {
 	typedb.KeyValueStore
 }
 
+func (db *nofreezedb) Stat(property string) (string, error) {
+	panic("implement me")
+}
+
+func (db *nofreezedb) AncientDatadir() (string, error) {
+	panic("implement me")
+}
+
+func (db *nofreezedb) Compact(start []byte, limit []byte) error {
+	panic("implement me")
+}
+
 // Hasagular返回一个错误，因为我们没有背链冷冻柜。
 func (db *nofreezedb) HasAncient(kind string, number uint64) (bool, error) {
 	return false, errNotSupported

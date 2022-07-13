@@ -92,6 +92,31 @@ func AppendUint64(b []byte, i uint64) []byte {
 	}
 }
 
+// SplitUint64解码b开头的整数。它还返回“rest”中整数之后的剩余数据。
+func SplitUint64(b []byte) (x uint64, rest []byte, err error) {
+	content, rest, err := SplitString(b)
+	if err != nil {
+		return 0, b, err
+	}
+	switch {
+	case len(content) == 0:
+		return 0, rest, nil
+	case len(content) == 1:
+		if content[0] == 0 {
+			return 0, b, ErrCanonInt
+		}
+		return uint64(content[0]), rest, nil
+	case len(content) > 8:
+		return 0, b, errUintOverflow
+	default:
+		x, err = readSize(content, byte(len(content)))
+		if err != nil {
+			return 0, b, ErrCanonInt
+		}
+		return x, rest, nil
+	}
+}
+
 // Split返回第一个RLP值的内容以及该值之后的任何字节，作为b的子片。
 func Split(b []byte) (k Kind, content, rest []byte, err error) {
 	k, ts, cs, err := readKind(b)
@@ -208,4 +233,12 @@ func readSize(b []byte, slen byte) (uint64, error) {
 		return 0, ErrCanonSize
 	}
 	return s, nil
+}
+
+// IntSize返回整数x的编码大小。
+func IntSize(x uint64) int {
+	if x < 0x80 {
+		return 1
+	}
+	return 1 + intsize(x)
 }

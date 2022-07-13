@@ -3,8 +3,6 @@ package vm
 import (
 	"crypto/sha256"
 	"errors"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
@@ -23,7 +21,7 @@ type sha256hash struct{}
 // RequiredGas返回执行预编译合同所需的气体。
 // 这种方法不需要任何溢出检查，因为任何重要的输入尺寸气体成本都很高，无法支付。
 func (c *sha256hash) RequiredGas(input []byte) uint64 {
-	return uint64(len(input)+31)/32*params.Sha256PerWordGas + params.Sha256BaseGas
+	return uint64(len(input)+31)/32*entity.Sha256PerWordGas + entity.Sha256BaseGas
 }
 func (c *sha256hash) Run(input []byte) ([]byte, error) {
 	h := sha256.Sum256(input)
@@ -36,12 +34,12 @@ type ripemd160hash struct{}
 // RequiredGas返回执行预编译合同所需的气体。
 //这种方法不需要任何溢出检查，因为任何重要的输入尺寸气体成本都很高，无法支付。
 func (c *ripemd160hash) RequiredGas(input []byte) uint64 {
-	return uint64(len(input)+31)/32*params.Ripemd160PerWordGas + params.Ripemd160BaseGas
+	return uint64(len(input)+31)/32*entity.Ripemd160PerWordGas + entity.Ripemd160BaseGas
 }
 func (c *ripemd160hash) Run(input []byte) ([]byte, error) {
 	ripemd := ripemd160.New()
 	ripemd.Write(input)
-	return common.LeftPadBytes(ripemd.Sum(nil), 32), nil
+	return operationutils.LeftPadBytes(ripemd.Sum(nil), 32), nil
 }
 
 // 作为本机约定实现的数据拷贝。
@@ -50,7 +48,7 @@ type dataCopy struct{}
 // RequiredGas返回执行预编译合同所需的气体。
 //这种方法不需要任何溢出检查，因为任何重要的输入尺寸气体成本都很高，无法支付。
 func (c *dataCopy) RequiredGas(input []byte) uint64 {
-	return uint64(len(input)+31)/32*params.IdentityPerWordGas + params.IdentityBaseGas
+	return uint64(len(input)+31)/32*entity.IdentityPerWordGas + entity.IdentityBaseGas
 }
 func (c *dataCopy) Run(in []byte) ([]byte, error) {
 	return in, nil
@@ -132,6 +130,27 @@ var PrecompiledContractsHomestead = map[entity.Address]PrecompiledContract{
 	entity.BytesToAddress([]byte{2}): &sha256hash{},
 	entity.BytesToAddress([]byte{3}): &ripemd160hash{},
 	entity.BytesToAddress([]byte{4}): &dataCopy{},
+}
+
+var (
+	PrecompiledAddressesBerlin    []entity.Address
+	PrecompiledAddressesIstanbul  []entity.Address
+	PrecompiledAddressesByzantium []entity.Address
+	PrecompiledAddressesHomestead []entity.Address
+)
+
+// ActivePrecompiles returns the precompiles enabled with the current configuration.
+func ActivePrecompiles(rules entity.Rules) []entity.Address {
+	switch {
+	case rules.IsBerlin:
+		return PrecompiledAddressesBerlin
+	case rules.IsIstanbul:
+		return PrecompiledAddressesIstanbul
+	case rules.IsByzantium:
+		return PrecompiledAddressesByzantium
+	default:
+		return PrecompiledAddressesHomestead
+	}
 }
 
 //RunPrecompiledContract运行并评估预编译协定的输出。

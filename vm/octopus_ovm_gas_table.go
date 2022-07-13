@@ -2,8 +2,8 @@ package vm
 
 import (
 	"errors"
-	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/entity/math"
 )
 
 // memoryGasCost calculates the quadratic gas for memory expansion. It does so

@@ -9,13 +9,18 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/event"
+	"github.com/radiation-octopus/octopus-blockchain/internal/ethapi"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/miner"
+	"github.com/radiation-octopus/octopus-blockchain/oct/filters"
 	"github.com/radiation-octopus/octopus-blockchain/oct/octconfig"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
-	"github.com/radiation-octopus/octopus-blockchain/operationdb/tire"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb/trie"
+	"github.com/radiation-octopus/octopus-blockchain/p2p"
+	"github.com/radiation-octopus/octopus-blockchain/rpc"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
 	"github.com/radiation-octopus/octopus-blockchain/vm"
-	"github.com/radiation-octopus/octopus/log"
 	"math/big"
 	"sync"
 	"time"
@@ -27,7 +32,7 @@ type Octopus struct {
 	// Handlers
 	txPool     *blockchain.TxPool
 	Blockchain *blockchain.BlockChain `autoInjectLang:"blockchain.BlockChain"`
-	//handler            *blockchain.handler
+	handler    *handler
 	//ethDialCandidates  enode.Iterator
 	//snapDialCandidates enode.Iterator
 	//merger             *consensus.Merger
@@ -35,7 +40,7 @@ type Octopus struct {
 	// DB interfaces
 	chainDb typedb.Database // 区块链数据库
 
-	//eventMux       *event.TypeMux
+	eventMux       *event.TypeMux
 	Engine         consensus.Engine `autoInjectLang:"octell.Octell"`
 	accountManager *accounts.Manager
 
@@ -43,16 +48,16 @@ type Octopus struct {
 	//bloomIndexer      *core.ChainIndexer             // Bloom索引器在块导入期间运行
 	closeBloomHandler chan struct{}
 
-	//APIBackend *operationconsole.OctAPIBackend
+	APIBackend *OctAPIBackend
 
 	miner    *miner.Miner
 	gasPrice *big.Int
 	octWork  entity.Address
 
-	networkID uint64
-	//netRPCService *ethapi.PublicNetAPI
+	networkID     uint64
+	netRPCService *ethapi.NetAPI
 
-	//p2pServer *p2p.Server
+	p2pServer *p2p.Server
 
 	lock sync.RWMutex // 保护可变字段（如gas价格和oct）
 
@@ -81,7 +86,7 @@ func (oct *Octopus) StateAtBlock(b *block2.Block, reexec uint64, base *operation
 	if base != nil {
 		if preferDisk {
 			// 创建短暂的trie。用于隔离活动数据库。否则，通过跟踪创建的内部垃圾将保留到磁盘中。
-			database = operationdb.NewDatabaseWithConfig(oct.chainDb, &tire.Config{Cache: 16})
+			database = operationdb.NewDatabaseWithConfig(oct.chainDb, &trie.Config{Cache: 16})
 			if db, err = operationdb.NewOperationDb(b.Root(), database); err == nil {
 				log.Info("Found disk backend for operation trie", "root", b.Root(), "number", b.Number())
 				return db, nil
@@ -96,7 +101,7 @@ func (oct *Octopus) StateAtBlock(b *block2.Block, reexec uint64, base *operation
 		current = b
 
 		// 创建短暂的trie。用于隔离活动数据库。否则，通过跟踪创建的内部垃圾将保留到磁盘中。
-		database = operationdb.NewDatabaseWithConfig(oct.chainDb, &tire.Config{Cache: 16})
+		database = operationdb.NewDatabaseWithConfig(oct.chainDb, &trie.Config{Cache: 16})
 
 		// 如果我们没有检查脏数据库，一定要检查干净的数据库，否则我们会倒转经过一个持久化的块（特定的角案例是来自genesis的链跟踪）。
 		if !checkLive {
@@ -124,7 +129,7 @@ func (oct *Octopus) StateAtBlock(b *block2.Block, reexec uint64, base *operation
 		}
 		if err != nil {
 			switch err.(type) {
-			case *tire.MissingNodeError:
+			case *trie.MissingNodeError:
 				return nil, fmt.Errorf("required historical state unavailable (reexec=%d)", reexec)
 			default:
 				return nil, err
@@ -200,6 +205,11 @@ func New(oct *Octopus, cfg *octconfig.Config) (*Octopus, error) {
 	oct.gasPrice = cfg.Miner.GasPrice
 	oct.chainDb = oct.Blockchain.GetDB()
 	oct.miner = miner.New(oct, &cfg.Miner, oct.Blockchain.Config(), oct.Engine)
+
+	oct.APIBackend = &OctAPIBackend{true, true, oct}
+	//lo := oct.APIs()
+	//lo["personal"]
+	//stack.RegisterAPIs(oct.APIs())
 	return oct, nil
 }
 
@@ -255,6 +265,48 @@ func (s *Octopus) StartMining(threads int) error {
 		go s.miner.Start(eb)
 	}
 	return nil
+}
+
+// API返回以太坊包提供的RPC服务集合。
+//注意，其中一些服务可能需要转移到其他地方。
+func (o *Octopus) APIs() []rpc.API {
+	apis := ethapi.GetAPIs(o.APIBackend)
+
+	// 附加共识引擎显式公开的任何API
+	apis = append(apis, o.Engine.APIs(o.BlockChain())...)
+
+	// 附加所有本地API并返回
+	return append(apis, []rpc.API{
+		{
+			Namespace: "eth",
+			Version:   "1.0",
+			Service:   NewOctopusAPI(o),
+		}, {
+			Namespace: "miner",
+			Version:   "1.0",
+			Service:   NewMinerAPI(o),
+		}, {
+			//Namespace: "eth",
+			//Version:   "1.0",
+			//Service:   downloader.NewDownloaderAPI(o.handler.downloader, o.eventMux),
+		}, {
+			Namespace: "eth",
+			Version:   "1.0",
+			Service:   filters.NewFilterAPI(o.APIBackend, false, 5*time.Minute),
+		}, {
+			Namespace: "admin",
+			Version:   "1.0",
+			Service:   NewAdminAPI(o),
+		}, {
+			Namespace: "debug",
+			Version:   "1.0",
+			Service:   NewDebugAPI(o),
+		}, {
+			Namespace: "net",
+			Version:   "1.0",
+			Service:   o.netRPCService,
+		},
+	}...)
 }
 
 func (s *Octopus) OctWork() (eb entity.Address, err error) {

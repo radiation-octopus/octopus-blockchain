@@ -4,14 +4,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/go-kit/kit/metrics"
 	"github.com/golang/snappy"
 	"github.com/prometheus/tsdb/fileutil"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
-	"github.com/radiation-octopus/octopus/log"
 	"github.com/radiation-octopus/octopus/utils"
 	"io"
 	"math"
@@ -429,7 +428,7 @@ func (f *Freezer) MigrateTable(kind string, convert convertLegacyFn) error {
 	// 遍历条目并转换它们
 	if err := forEach(table, offset, func(i uint64, blob []byte) error {
 		if i%10000 == 0 && time.Since(logged) > 16*time.Second {
-			log.Info("Processing legacy elements", "count", i, "elapsed", common.PrettyDuration(time.Since(start)))
+			log.Info("Processing legacy elements", "count", i, "elapsed", entity.PrettyDuration(time.Since(start)))
 			logged = time.Now()
 		}
 		out, err = convert(blob)
@@ -446,7 +445,7 @@ func (f *Freezer) MigrateTable(kind string, convert convertLegacyFn) error {
 	if err := batch.commit(); err != nil {
 		return err
 	}
-	log.Info("Replacing old table files with migrated ones", "elapsed", common.PrettyDuration(time.Since(start)))
+	log.Info("Replacing old table files with migrated ones", "elapsed", entity.PrettyDuration(time.Since(start)))
 	// 释放和删除旧表文件。注意，这不会删除索引文件。
 	table.releaseFilesAfter(0, true)
 
@@ -666,7 +665,7 @@ func (f *chainFreezer) freeze(db typedb.KeyValueStore) {
 		if n := len(ancients); n > 0 {
 			context = append(context, []interface{}{"hash", ancients[n-1]}...)
 		}
-		log.Info(context...)
+		log.Info("Deep froze chain segment", context...)
 
 		// 避免因微小写入而导致数据库崩溃
 		if frozen-first < freezerBatchLimit {

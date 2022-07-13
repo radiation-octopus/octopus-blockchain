@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"fmt"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/event"
 	"reflect"
 	"sort"
@@ -88,6 +89,37 @@ func (am *Manager) Backends(kind reflect.Type) []Backend {
 	return am.backends[kind]
 }
 
+// Wallet检索与特定URL关联的钱包。
+func (am *Manager) Wallet(url string) (Wallet, error) {
+	am.lock.RLock()
+	defer am.lock.RUnlock()
+
+	parsed, err := parseURL(url)
+	if err != nil {
+		return nil, err
+	}
+	for _, wallet := range am.walletsNoLock() {
+		if wallet.URL() == parsed {
+			return wallet, nil
+		}
+	}
+	return nil, ErrUnknownWallet
+}
+
+// Accounts返回acentitymanager中所有钱包的所有帐户地址
+func (am *Manager) Accounts() []entity.Address {
+	am.lock.RLock()
+	defer am.lock.RUnlock()
+
+	addresses := make([]entity.Address, 0) // 如果为空，则返回[]，而不是nil
+	for _, wallet := range am.wallets {
+		for _, account := range wallet.Accounts() {
+			addresses = append(addresses, account.Address)
+		}
+	}
+	return addresses
+}
+
 // Wallets返回在此帐户管理器下注册的所有签名者帐户。
 func (am *Manager) Wallets() []Wallet {
 	am.lock.RLock()
@@ -114,6 +146,18 @@ func (am *Manager) walletsNoLock() []Wallet {
 	cpy := make([]Wallet, len(am.wallets))
 	copy(cpy, am.wallets)
 	return cpy
+}
+
+// 关闭终止客户经理的内部通知过程。
+func (am *Manager) Close() error {
+	errc := make(chan error)
+	am.quit <- errc
+	return <-errc
+}
+
+// Config返回帐户管理器的配置。
+func (am *Manager) Config() *Config {
+	return am.config
 }
 
 //newBackendEvent让经理知道它应该跟踪给定的后端以进行钱包更新。

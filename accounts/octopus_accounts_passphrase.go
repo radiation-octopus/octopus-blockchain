@@ -13,7 +13,6 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
-	"github.com/radiation-octopus/octopus/log"
 	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/crypto/scrypt"
 	"io"
@@ -50,18 +49,11 @@ type keyStorePassphrase struct {
 
 func (ks *keyStorePassphrase) GetKey(addr entity.Address, filename string, auth string) (*Key, error) {
 	// 从密钥库加载密钥并解密其内容
-	keyjson, err := os.Open(filename)
+	keyjson, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
-	var data []byte
-	buf := make([]byte, 1024)
-	k, err := keyjson.Read(buf)
-	if err != nil && err != io.EOF {
-		log.Error(err)
-	}
-	data = append(data, buf[:k]...)
-	key, err := DecryptKey(data, auth)
+	key, err := DecryptKey(keyjson, auth)
 	if err != nil {
 		return nil, err
 	}

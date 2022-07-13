@@ -28,3 +28,10 @@ type Batcher interface {
 	// NewBatchWithSize使用预先分配的缓冲区创建一个只写数据库批处理。
 	NewBatchWithSize(size int) Batch
 }
+
+// HookedBatch包装了一个任意的批处理，其中每个操作都可以挂接到该批处理中，以从黑匣子代码进行监视。
+type HookedBatch struct {
+	Batch
+	OnPut    func(key []byte, value []byte) // 插入键时回调
+	OnDelete func(key []byte)               // 删除密钥时回调
+}

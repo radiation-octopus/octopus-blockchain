@@ -10,12 +10,12 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/event"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
-	"github.com/radiation-octopus/octopus-blockchain/operationdb/tire"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb/trie"
 	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
 	"github.com/radiation-octopus/octopus-blockchain/transition"
-	"github.com/radiation-octopus/octopus/log"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -196,6 +196,27 @@ func (w *worker) stop() {
 	atomic.StoreInt32(&w.running, 0)
 }
 
+//pendingBlock返回挂起的块。
+func (w *worker) pendingBlock() *block2.Block {
+	//123
+	// 返回快照以避免currentMu互斥体上的争用
+	//w.snapshotMu.RLock()
+	//defer w.snapshotMu.RUnlock()
+	//return w.snapshotBlock
+	return nil
+}
+
+// 挂起返回挂起状态和相应的块。
+func (w *worker) pending() (*block2.Block, *operationdb.OperationDB) {
+	// return a snapshot to avoid contention on currentMu mutex
+	//w.snapshotMu.RLock()
+	//defer w.snapshotMu.RUnlock()
+	//if w.snapshotState == nil {
+	//	return nil, nil
+	//}
+	return nil, nil
+}
+
 // isRunning返回一个指示器，指示worker是否正在运行。
 func (w *worker) isRunning() bool {
 	return atomic.LoadInt32(&w.running) == 1
@@ -373,7 +394,7 @@ func (w *worker) generateWork(params *generateParams) (*block2.Block, error) {
 
 	w.fillTransactions(nil, work)
 
-	return block2.NewBlock(work.header, work.txs, work.receipts, tire.NewStackTrie(nil)), nil
+	return block2.NewBlock(work.header, work.txs, work.receipts, trie.NewStackTrie(nil)), nil
 }
 
 // prepareWork根据给定的参数构造密封任务，可以基于最后一个链头，也可以基于指定的父级。在此函数中，尚未填充挂起的事务，只返回空任务。
@@ -564,7 +585,7 @@ func (w *worker) commitTransactions(env *environment, txs *block2.TransactionsBy
 	if env.gasPool == nil {
 		env.gasPool = new(transition.GasPool).AddGas(gasLimit)
 	}
-	var coalescedLogs []*log.OctopusLog
+	var coalescedLogs []*log.Logger
 
 	for {
 		// 在以下三种情况下，我们将中断事务的执行。
@@ -650,9 +671,9 @@ func (w *worker) commitTransactions(env *environment, txs *block2.TransactionsBy
 
 		// 制作一个副本，州缓存日志，当本地工作者开采区块时，通过填写区块哈希，这些日志从待定日志“升级”到已开采日志。
 		//如果在处理PendingLogseEvent之前“升级”了日志，这可能会导致争用情况。
-		cpy := make([]*log.OctopusLog, len(coalescedLogs))
+		cpy := make([]*log.Logger, len(coalescedLogs))
 		for i, l := range coalescedLogs {
-			cpy[i] = new(log.OctopusLog)
+			cpy[i] = new(log.Logger)
 			*cpy[i] = *l
 		}
 		w.pendingLogsFeed.Send(cpy)
@@ -664,7 +685,7 @@ func (w *worker) commitTransactions(env *environment, txs *block2.TransactionsBy
 	return nil
 }
 
-func (w *worker) commitTransaction(env *environment, tx *block2.Transaction) ([]*log.OctopusLog, error) {
+func (w *worker) commitTransaction(env *environment, tx *block2.Transaction) ([]*log.Logger, error) {
 	//snap := env.operation.Snapshot()
 
 	receipt, err := blockchain.ApplyTransaction(w.chainConfig, w.chain, &env.coinbase, env.gasPool, env.operation, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig())
@@ -854,7 +875,7 @@ func (w *worker) resultLoop() {
 			//不同的块可以共享相同的sealhash，在此进行深度复制以防止写-写冲突。
 			var (
 				receipts = make([]*block2.Receipt, len(task.receipts))
-				logs     []*log.OctopusLog
+				logs     []*log.Logger
 			)
 			for i, taskReceipt := range task.receipts {
 				receipt := new(block2.Receipt)
@@ -867,9 +888,9 @@ func (w *worker) resultLoop() {
 				receipt.TransactionIndex = uint(i)
 
 				// 更新所有日志中的块哈希，因为它现在可用，而不是在创建单个事务的收据/日志时可用。
-				//receipt.Logs = make([]*log.OctopusLog, len(taskReceipt.Logs))
+				//receipt.Logs = make([]*log.Logger, len(taskReceipt.Logs))
 				//for i, taskLog := range taskReceipt.Logs {
-				//	log := new(log.OctopusLog)
+				//	log := new(log.Logger)
 				//	receipt.Logs[i] = log
 				//	*log = *taskLog
 				//	//log.BlockHash = hash

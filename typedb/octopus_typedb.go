@@ -9,8 +9,8 @@ type Database interface {
 	Writer
 	Batcher
 	Iteratee
-	//Stater
-	//Compacter
+	Stater
+	Compacter
 	//Snapshotter
 	io.Closer
 }
@@ -24,6 +24,21 @@ type Reader interface {
 type Writer interface {
 	KeyValueWriter
 	//AncientWriter
+}
+
+// Stater包含从键值和不可变的古代数据中检索状态所需的方法。
+type Stater interface {
+	KeyValueStater
+	AncientStater
+}
+
+// Compacter包装了备份数据存储的压缩方法。
+type Compacter interface {
+	// Compact将给定密钥范围的底层数据存储展平。
+	//本质上，删除和覆盖的版本被丢弃，数据被重新排列以减少访问它们所需的操作成本。
+	//零开始被视为数据存储中所有密钥之前的密钥；零限制被视为数据存储中所有键之后的键。
+	//如果两者都为零，则它将压缩整个数据存储。
+	Compact(start []byte, limit []byte) error
 }
 
 type KeyValueReader interface {
@@ -40,6 +55,12 @@ type KeyValueWriter interface {
 
 	// Delete从键值数据存储中删除键。
 	Delete(key []byte) error
+}
+
+// KeyValueStater包装了支持数据存储的Stat方法。
+type KeyValueStater interface {
+	// Stat返回数据库的特定内部Stat。
+	Stat(property string) (string, error)
 }
 
 //func (op OperationDB) IsHas(mark string, key string) (bool, error) {

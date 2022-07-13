@@ -1,20 +1,11 @@
 package consensus
 
 import (
-	"errors"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
+	"github.com/radiation-octopus/octopus-blockchain/rpc"
 	"math/big"
-)
-
-var (
-	// 当验证块需要未知的祖先时，将返回ErrUnknownAncestor。
-	ErrUnknownAncestor = errors.New("unknown ancestor")
-	// 根据当前节点，当块的时间戳在未来时，将返回ErrFutureBlock。
-	ErrFutureBlock = errors.New("block in the future")
-	// 如果块的编号不等于其父块的编号加1，则返回ErrInvalidNumber。
-	ErrInvalidNumber = errors.New("invalid block number")
 )
 
 //该接口定义了验证期间访问本地本地区块两所需的一小部分方法
@@ -41,6 +32,10 @@ type ChainHeaderReader interface {
 //共识引擎接口
 type Engine interface {
 	Author(header *block2.Header) (entity.Address, error)
+
+	// VerifyHeader检查标头是否符合给定引擎的共识规则。
+	//可以在此处选择验证密封，也可以通过VerifySeal方法明确验证密封。
+	VerifyHeader(chain ChainHeaderReader, header *block2.Header, seal bool) error
 	//表头验证器，该方法返回退出通道以终止操作，验证顺序为切片排序
 	VerifyHeaders(chain ChainHeaderReader, headers []*block2.Header, seals []bool) (chan<- struct{}, <-chan error)
 
@@ -61,6 +56,12 @@ type Engine interface {
 
 	// CalcDifficulty是难度调整算法。它返回新块应该具有的难度。
 	CalcDifficulty(chain ChainHeaderReader, time uint64, parent *block2.Header) *big.Int
+
+	// API返回此一致性引擎提供的RPC API。
+	APIs(chain ChainHeaderReader) []rpc.API
+
+	// Close终止共识引擎维护的任何后台线程。
+	Close() error
 }
 
 // FinalizeAndAssemble 实现 consensus.Engine

@@ -2,8 +2,8 @@ package vm
 
 import (
 	"fmt"
-	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"sort"
 )
 
@@ -49,9 +49,9 @@ func ActivateableEips() []string {
 // - Define SELFBALANCE, with cost GasFastStep (5)
 func enable1884(jt *JumpTable) {
 	// Gas cost changes
-	jt[SLOAD].constantGas = params.SloadGasEIP1884
-	jt[BALANCE].constantGas = params.BalanceGasEIP1884
-	jt[EXTCODEHASH].constantGas = params.ExtcodeHashGasEIP1884
+	jt[SLOAD].constantGas = entity.SloadGasEIP1884
+	jt[BALANCE].constantGas = entity.BalanceGasEIP1884
+	jt[EXTCODEHASH].constantGas = entity.ExtcodeHashGasEIP1884
 
 	// New opcode
 	jt[SELFBALANCE] = &operation{
@@ -89,7 +89,7 @@ func opChainID(pc *uint64, interpreter *OVMInterpreter, scope *ScopeContext) ([]
 
 // enable2200 applies EIP-2200 (Rebalance net-metered SSTORE)
 func enable2200(jt *JumpTable) {
-	jt[SLOAD].constantGas = params.SloadGasEIP2200
+	jt[SLOAD].constantGas = entity.SloadGasEIP2200
 	jt[SSTORE].dynamicGas = gasSStoreEIP2200
 }
 
@@ -101,33 +101,33 @@ func enable2929(jt *JumpTable) {
 	jt[SLOAD].constantGas = 0
 	jt[SLOAD].dynamicGas = gasSLoadEIP2929
 
-	jt[EXTCODECOPY].constantGas = params.WarmStorageReadCostEIP2929
+	jt[EXTCODECOPY].constantGas = entity.WarmStorageReadCostEIP2929
 	jt[EXTCODECOPY].dynamicGas = gasExtCodeCopyEIP2929
 
-	jt[EXTCODESIZE].constantGas = params.WarmStorageReadCostEIP2929
+	jt[EXTCODESIZE].constantGas = entity.WarmStorageReadCostEIP2929
 	jt[EXTCODESIZE].dynamicGas = gasEip2929AccountCheck
 
-	jt[EXTCODEHASH].constantGas = params.WarmStorageReadCostEIP2929
+	jt[EXTCODEHASH].constantGas = entity.WarmStorageReadCostEIP2929
 	jt[EXTCODEHASH].dynamicGas = gasEip2929AccountCheck
 
-	jt[BALANCE].constantGas = params.WarmStorageReadCostEIP2929
+	jt[BALANCE].constantGas = entity.WarmStorageReadCostEIP2929
 	jt[BALANCE].dynamicGas = gasEip2929AccountCheck
 
-	jt[CALL].constantGas = params.WarmStorageReadCostEIP2929
+	jt[CALL].constantGas = entity.WarmStorageReadCostEIP2929
 	jt[CALL].dynamicGas = gasCallEIP2929
 
-	jt[CALLCODE].constantGas = params.WarmStorageReadCostEIP2929
+	jt[CALLCODE].constantGas = entity.WarmStorageReadCostEIP2929
 	jt[CALLCODE].dynamicGas = gasCallCodeEIP2929
 
-	jt[STATICCALL].constantGas = params.WarmStorageReadCostEIP2929
+	jt[STATICCALL].constantGas = entity.WarmStorageReadCostEIP2929
 	jt[STATICCALL].dynamicGas = gasStaticCallEIP2929
 
-	jt[DELEGATECALL].constantGas = params.WarmStorageReadCostEIP2929
+	jt[DELEGATECALL].constantGas = entity.WarmStorageReadCostEIP2929
 	jt[DELEGATECALL].dynamicGas = gasDelegateCallEIP2929
 
 	// This was previously part of the dynamic cost, but we're using it as a constantGas
 	// factor here
-	jt[SELFDESTRUCT].constantGas = params.SelfdestructGasEIP150
+	jt[SELFDESTRUCT].constantGas = entity.SelfdestructGasEIP150
 	jt[SELFDESTRUCT].dynamicGas = gasSelfdestructEIP2929
 }
 

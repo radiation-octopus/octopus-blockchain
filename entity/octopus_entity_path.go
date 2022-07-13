@@ -1,6 +1,9 @@
 package entity
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+)
 
 // FileExist检查文件路径中是否存在文件。
 func FileExist(filePath string) bool {
@@ -10,4 +13,12 @@ func FileExist(filePath string) bool {
 	}
 
 	return true
+}
+
+// AbsolutePath返回datadir+filename，如果是绝对值，则返回filename。
+func AbsolutePath(datadir string, filename string) string {
+	if filepath.IsAbs(filename) {
+		return filename
+	}
+	return filepath.Join(datadir, filename)
 }

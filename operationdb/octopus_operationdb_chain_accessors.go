@@ -3,7 +3,7 @@ package operationdb
 import (
 	"github.com/VictoriaMetrics/fastcache"
 	lru "github.com/hashicorp/golang-lru"
-	"github.com/radiation-octopus/octopus-blockchain/operationdb/tire"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb/trie"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
 )
 
@@ -23,10 +23,10 @@ func NewDatabase(db typedb.Database) DatabaseI {
 
 // NewDatabaseWithConfig为状态创建备份存储。
 //返回的数据库可以安全地并发使用，并在大型内存缓存中保留大量折叠的RLP trie节点。
-func NewDatabaseWithConfig(db typedb.Database, config *tire.Config) DatabaseI {
+func NewDatabaseWithConfig(db typedb.Database, config *trie.Config) DatabaseI {
 	csc, _ := lru.New(codeSizeCacheSize)
 	return &cachingDB{
-		db:            tire.TrieNewDatabaseWithConfig(db, config),
+		db:            trie.TrieNewDatabaseWithConfig(db, config),
 		codeSizeCache: csc,
 		codeCache:     fastcache.New(codeCacheSize),
 	}

@@ -70,6 +70,19 @@ func EncodeToBytes(val interface{}) ([]byte, error) {
 	return buf.makeBytes(), nil
 }
 
+// 编码器读取器返回一个读取器，从中可以读取val的RLP编码。
+//返回的大小是编码数据的总大小。有关编码规则，请参阅Encode的文档。
+func EncodeToReader(val interface{}) (size int, r io.Reader, err error) {
+	buf := getEncBuffer()
+	if err := buf.encode(val); err != nil {
+		encBufferPool.Put(buf)
+		return 0, nil, err
+	}
+	// 注意：无法将读取器放回此处的池中，因为它由encReader持有。
+	//当它完全用完时，读者会把它放回原处。
+	return buf.size(), &encReader{buf: buf}, nil
+}
+
 // puthead将列表或字符串头写入buf。buf的长度必须至少为9字节。
 func puthead(buf []byte, smalltag, largetag byte, size uint64) int {
 	if size < 56 {

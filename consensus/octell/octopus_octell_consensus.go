@@ -9,11 +9,11 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/consensus/misc"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
-	"github.com/radiation-octopus/octopus-blockchain/operationdb/tire"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb/trie"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
-	"github.com/radiation-octopus/octopus/log"
 	"golang.org/x/crypto/sha3"
 	"math"
 	"math/big"
@@ -405,6 +405,25 @@ func calcDifficultyFrontier(time uint64, parent *block2.Header) *big.Int {
 	return diff
 }
 
+// VerifyHeader检查标头是否符合股票以太坊ethash引擎的共识规则。
+func (o *Octell) VerifyHeader(chain consensus.ChainHeaderReader, header *block2.Header, seal bool) error {
+	// 如果我们运行的是全引擎模拟，则接受任何有效输入
+	if o.Config.PowMode == ModeFullFake {
+		return nil
+	}
+	// 如果标头已知或其父项未知，则短路
+	number := header.Number.Uint64()
+	if chain.GetHeader(header.Hash(), number) != nil {
+		return nil
+	}
+	parent := chain.GetHeader(header.ParentHash, number-1)
+	if parent == nil {
+		return consensus.ErrUnknownAncestor
+	}
+	// 通过健康检查，进行适当验证
+	return o.verifyHeader(chain, header, parent, false, seal, time.Now().Unix())
+}
+
 //VerifyHeaders与VerifyHeader类似，但同时验证一批标头。该方法返回退出通道以中止操作，返回结果通道以检索异步验证。
 func (o *Octell) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*block2.Header, seals []bool) (chan<- struct{}, <-chan error) {
 	//如果我们运行的是全引擎模拟，请接受任何有效输入
@@ -488,7 +507,7 @@ func (o *Octell) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *
 	o.Finalize(chain, header, ob, txs, uncles)
 
 	// 收割台似乎已完成，组装成块并返回
-	return block2.NewBlock(header, txs, receipts, tire.NewStackTrie(nil)), nil
+	return block2.NewBlock(header, txs, receipts, trie.NewStackTrie(nil)), nil
 }
 
 // Finalize实现共识。引擎，累积积木和叔叔奖励，设置标题的最终状态

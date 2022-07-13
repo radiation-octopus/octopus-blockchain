@@ -45,7 +45,7 @@ type Wallet interface {
 
 	// 派生尝试在指定的派生路径上显式派生层次确定性帐户。
 	//如果需要，派生帐户将添加到钱包的跟踪帐户列表中。
-	//Derive(path DerivationPath, pin bool) (Account, error)
+	Derive(path DerivationPath, pin bool) (Account, error)
 
 	// SelfDerive设置基本帐户派生路径，钱包尝试从中发现非零帐户，并自动将其添加到跟踪帐户列表中。
 	//注意，自派生将递增指定路径的最后一个组件，而不是递减到子路径中，以允许发现从非零组件开始的帐户。

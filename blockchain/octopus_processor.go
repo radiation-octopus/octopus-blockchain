@@ -5,10 +5,10 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/transition"
 	"github.com/radiation-octopus/octopus-blockchain/vm"
-	"github.com/radiation-octopus/octopus/log"
 	"math/big"
 )
 
@@ -32,17 +32,17 @@ func NewBlockProcessor(bc *BlockChain, engine consensus.Engine) *BlockProcessor 
 //处理器接口
 type Processor interface {
 	//处理改变区块状态，将区块加入主链
-	Process(block *block2.Block, operationdb *operationdb.OperationDB, cfg vm.Config) (block2.Receipts, []*log.OctopusLog, uint64, error)
+	Process(block *block2.Block, operationdb *operationdb.OperationDB, cfg vm.Config) (block2.Receipts, []*log.Logger, uint64, error)
 }
 
-func (p *BlockProcessor) Process(b *block2.Block, operationdb *operationdb.OperationDB, cfg vm.Config) (block2.Receipts, []*log.OctopusLog, uint64, error) {
+func (p *BlockProcessor) Process(b *block2.Block, operationdb *operationdb.OperationDB, cfg vm.Config) (block2.Receipts, []*log.Logger, uint64, error) {
 	var (
 		receipts    block2.Receipts
 		usedGas     = new(uint64)
 		header      = b.Header()
 		blockHash   = b.Hash()
 		blockNumber = b.Number()
-		allLogs     []*log.OctopusLog
+		allLogs     []*log.Logger
 		gp          = new(transition.GasPool).AddGas(b.GasLimit())
 	)
 	blockContext := vm.NewOVMBlockContext(header, p.bc, nil)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"container/heap"
 	"errors"
-	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus/utils"
@@ -36,6 +35,25 @@ type Transaction struct {
 	hash atomic.Value
 	size atomic.Value
 	from atomic.Value
+}
+
+// decodeTyped从规范格式解码类型化事务。
+func (tx *Transaction) decodeTyped(b []byte) (TxData, error) {
+	if len(b) <= 1 {
+		return nil, errShortTypedTx
+	}
+	switch b[0] {
+	case AccessListTxType:
+		//var inner AccessListTx
+		//err := rlp.DecodeBytes(b[1:], &inner)
+		return nil, nil
+	case DynamicFeeTxType:
+		var inner DynamicFeeTx
+		err := rlp.DecodeBytes(b[1:], &inner)
+		return &inner, err
+	default:
+		return nil, ErrTxTypeNotSupported
+	}
 }
 
 type TxData interface {
@@ -140,6 +158,27 @@ func (tx *Transaction) Size() utils.StorageSize {
 	return utils.StorageSize(c)
 }
 
+// 解组二进制解码事务的规范编码。它支持传统RLP事务和EIP2718类型的事务。
+func (tx *Transaction) UnmarshalBinary(b []byte) error {
+	if len(b) > 0 && b[0] > 0x7f {
+		// 这是一笔遗留交易。
+		var data LegacyTx
+		err := rlp.DecodeBytes(b, &data)
+		if err != nil {
+			return err
+		}
+		tx.setDecoded(&data, len(b))
+		return nil
+	}
+	// 这是一个EIP2718类型的交易信封。
+	inner, err := tx.decodeTyped(b)
+	if err != nil {
+		return err
+	}
+	tx.setDecoded(inner, len(b))
+	return nil
+}
+
 //成本返回gas*gasPrice+价值。
 func (tx *Transaction) Cost() *big.Int {
 	total := new(big.Int).Mul(tx.GasPrice(), new(big.Int).SetUint64(tx.Gas()))
@@ -235,6 +274,17 @@ func (s Transactions) EncodeIndex(i int, w *bytes.Buffer) {
 	tx.encodeTyped(w)
 }
 
+// MarshalBinary返回事务的规范编码。
+//对于遗留事务，它返回RLP编码。对于EIP-2718类型的事务，它返回类型和负载。
+func (tx *Transaction) MarshalBinary() ([]byte, error) {
+	if tx.Type() == LegacyTxType {
+		return rlp.EncodeToBytes(tx.inner)
+	}
+	var buf bytes.Buffer
+	err := tx.encodeTyped(&buf)
+	return buf.Bytes(), err
+}
+
 //setDecoded设置解码后的内部事务和大小。
 func (tx *Transaction) setDecoded(inner TxData, size int) {
 	tx.inner = inner
@@ -247,8 +297,7 @@ func (tx *Transaction) setDecoded(inner TxData, size int) {
 // WithSignature返回具有给定签名的新事务。此签名需要采用[R | | S | V]格式，其中V为0或1。
 func (tx *Transaction) WithSignature(signer Signer, sig []byte) (*Transaction, error) {
 	r, s, v, err := signer.SignatureValues(tx, sig)
-	a := v.BitLen()
-	fmt.Println(a)
+	//a := v.BitLen()
 	if err != nil {
 		return nil, err
 	}

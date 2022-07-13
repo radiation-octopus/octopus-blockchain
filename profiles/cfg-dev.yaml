@@ -131,3 +131,4 @@ octopus:
           time: "0x5ddf8f3e"
           nonce: "0x0"
           txLookupLimit: 0
+          baseFee: 875000000

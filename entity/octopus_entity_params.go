@@ -160,8 +160,15 @@ var (
 var DAOForkExtraRange = big.NewInt(10)
 
 const (
+
+	// CHTFrequency是创建CHT的块频率
+	CHTFrequency = 32768
 	// FullImmutabilityThreshold是链段被视为不可变的块数（即软终结性）。
 	//它被下载程序用作针对深层祖先的硬限制，被区块链用作针对深层reorgs的硬限制，
 	//被冻结器用作截止阈值，被集团用作快照信任限制。
 	FullImmutabilityThreshold = 90000
+
+	// LightImmutabilityThreshold是块数，在该块数之后，头链段对于light客户端是不可变的（即软终结性）。
+	//它被下载程序用作针对深层祖先的硬限制，被区块链用作针对深层REORG的硬限制，被轻型剪枝器用作剪枝有效性保证。
+	LightImmutabilityThreshold = 30000
 )

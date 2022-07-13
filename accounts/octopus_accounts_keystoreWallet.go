@@ -79,6 +79,11 @@ func (w *keystoreWallet) SignDataWithPassphrase(account Account, passphrase, mim
 	return w.keystore.SignHashWithPassphrase(account, passphrase, crypto.Keccak256(data))
 }
 
+// 衍生工具帐户。Wallet，但它是普通钱包的noop，因为普通密钥库帐户没有分层帐户派生的概念。
+func (w *keystoreWallet) Derive(path DerivationPath, pin bool) (Account, error) {
+	return Account{}, ErrNotSupported
+}
+
 // SignText实现帐户。钱包，试图用给定帐户对给定文本的哈希进行签名。
 func (w *keystoreWallet) SignText(account Account, text []byte) ([]byte, error) {
 	return w.signHash(account, TextHash(text))

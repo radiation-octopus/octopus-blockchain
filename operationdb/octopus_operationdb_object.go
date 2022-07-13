@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
-	"github.com/radiation-octopus/octopus/log"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
 )
@@ -78,10 +78,10 @@ func (s *OperationObject) Nonce() uint64 {
 }
 
 func (s *OperationObject) SetNonce(nonce uint64) {
-	//s.db.journal.append(nonceChange{
-	//	account: &s.address,
-	//	prev:    s.data.Nonce,
-	//})
+	s.db.journal.append(nonceChange{
+		account: &s.address,
+		prev:    s.data.Nonce,
+	})
 	s.setNonce(nonce)
 }
 
@@ -114,11 +114,25 @@ func (s *OperationObject) AddBalance(amount *big.Int) {
 }
 
 func (s *OperationObject) SetBalance(amount *big.Int) {
-	//s.db.journal.append(balanceChange{
-	//	account: &s.address,
-	//	prev:    new(big.Int).Set(s.data.Balance),
-	//})
+	s.db.journal.append(balanceChange{
+		account: &s.address,
+		prev:    new(big.Int).Set(s.data.Balance),
+	})
 	s.setBalance(amount)
+}
+
+// 设置存储用给定的状态存储替换整个状态存储。
+//调用此函数后，将忽略所有原始状态，并且状态查找仅在伪状态存储中发生。
+//注意：此功能仅用于调试目的。
+func (s *OperationObject) SetStorage(storage map[entity.Hash]entity.Hash) {
+	// 如果为零，则分配假存储。
+	if s.fakeStorage == nil {
+		s.fakeStorage = make(Storage)
+	}
+	for key, value := range storage {
+		s.fakeStorage[key] = value
+	}
+	// 不要打扰日志，因为这个函数应该只用于调试，并且“伪”存储不会提交给数据库。
 }
 
 func (s *OperationObject) setBalance(amount *big.Int) {

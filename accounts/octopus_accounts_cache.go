@@ -6,7 +6,7 @@ import (
 	"fmt"
 	mapset "github.com/deckarep/golang-set"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
-	"github.com/radiation-octopus/octopus/log"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus/utils"
 	"os"
 	"path/filepath"
@@ -45,6 +45,13 @@ func (ac *accountCache) add(newAccount Account) {
 	copy(ac.all[i+1:], ac.all[i:])
 	ac.all[i] = newAccount
 	ac.byAddr[newAccount.Address] = append(ac.byAddr[newAccount.Address], newAccount)
+}
+
+func (ac *accountCache) hasAddress(addr entity.Address) bool {
+	ac.maybeReload()
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	return len(ac.byAddr[addr]) > 0
 }
 
 func (ac *accountCache) accounts() []Account {

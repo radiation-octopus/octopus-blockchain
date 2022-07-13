@@ -1,17 +1,22 @@
 package crypto
 
 import (
+	"bufio"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/entity/math"
 	operationUtils "github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"golang.org/x/crypto/sha3"
 	"hash"
+	"io"
 	"math/big"
+	"os"
 )
 
 //SignatureLength表示携带具有恢复id的签名所需的字节长度。
@@ -20,10 +25,15 @@ const SignatureLength = 64 + 1 // 64字节ECDSA签名+1字节恢复id
 // DigestLength设置签名摘要的精确长度
 const DigestLength = 32
 
+// RecoveryIDOffset points to the byte offset within the signature that contains the recovery id.
+const RecoveryIDOffset = 64
+
 var (
 	secp256k1N, _  = new(big.Int).SetString("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", 16)
 	secp256k1halfN = new(big.Int).Div(secp256k1N, big.NewInt(2))
 )
+
+var errInvalidPubkey = errors.New("invalid secp256k1 public key")
 
 //KeccakState包裹sha3。状态除了通常的散列方法外，它还支持读取以从散列状态获取可变数量的数据。Read比Sum快，因为它不复制内部状态，但也修改内部状态。
 type KeccakState interface {
@@ -137,6 +147,99 @@ func FromECDSAPub(pub *ecdsa.PublicKey) []byte {
 		return nil
 	}
 	return elliptic.Marshal(S256(), pub.X, pub.Y)
+}
+
+// 从ECDSA将私钥导出到二进制转储。
+func FromECDSA(priv *ecdsa.PrivateKey) []byte {
+	if priv == nil {
+		return nil
+	}
+	return math.PaddedBigBytes(priv.D, priv.Params().BitSize/8)
+}
+
+//LoadECDSA从给定文件加载secp256k1私钥。
+func LoadECDSA(file string) (*ecdsa.PrivateKey, error) {
+	fd, err := os.Open(file)
+	if err != nil {
+		return nil, err
+	}
+	defer fd.Close()
+
+	r := bufio.NewReader(fd)
+	buf := make([]byte, 64)
+	n, err := readASCII(buf, r)
+	if err != nil {
+		return nil, err
+	} else if n != len(buf) {
+		return nil, fmt.Errorf("key file too short, want 64 hex characters")
+	}
+	if err := checkKeyFileEnd(r); err != nil {
+		return nil, err
+	}
+
+	return HexToECDSA(string(buf))
+}
+
+// SaveECDSA将secp256k1私钥保存到具有限制权限的给定文件。密钥数据以十六进制编码保存。
+func SaveECDSA(file string, key *ecdsa.PrivateKey) error {
+	k := hex.EncodeToString(FromECDSA(key))
+	return os.WriteFile(file, []byte(k), 0600)
+}
+
+// checkKeyFileEnd跳过密钥文件末尾的其他换行符。
+func checkKeyFileEnd(r *bufio.Reader) error {
+	for i := 0; ; i++ {
+		b, err := r.ReadByte()
+		switch {
+		case err == io.EOF:
+			return nil
+		case err != nil:
+			return err
+		case b != '\n' && b != '\r':
+			return fmt.Errorf("invalid character %q at end of key file", b)
+		case i >= 2:
+			return errors.New("key file too long, want 64 hex characters")
+		}
+	}
+}
+
+// ToECDSA创建具有给定D值的私钥。
+func ToECDSA(d []byte) (*ecdsa.PrivateKey, error) {
+	return toECDSA(d, true)
+}
+
+//HexToECDSA解析secp256k1私钥。
+func HexToECDSA(hexkey string) (*ecdsa.PrivateKey, error) {
+	b, err := hex.DecodeString(hexkey)
+	if byteErr, ok := err.(hex.InvalidByteError); ok {
+		return nil, fmt.Errorf("invalid hex character %q in private key", byte(byteErr))
+	} else if err != nil {
+		return nil, errors.New("invalid hex data for private key")
+	}
+	return ToECDSA(b)
+}
+
+// UnmarshalPubkey converts bytes to a secp256k1 public key.
+func UnmarshalPubkey(pub []byte) (*ecdsa.PublicKey, error) {
+	x, y := elliptic.Unmarshal(S256(), pub)
+	if x == nil {
+		return nil, errInvalidPubkey
+	}
+	return &ecdsa.PublicKey{Curve: S256(), X: x, Y: y}, nil
+}
+
+// readASCII 读入“buf”，当缓冲区已满或遇到不可打印的控制字符时停止。
+func readASCII(buf []byte, r *bufio.Reader) (n int, err error) {
+	for ; n < len(buf); n++ {
+		buf[n], err = r.ReadByte()
+		switch {
+		case err == io.EOF || buf[n] < '!':
+			return n, nil
+		case err != nil:
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 // CreateAddress在给定字节和nonce的情况下创建章鱼地址

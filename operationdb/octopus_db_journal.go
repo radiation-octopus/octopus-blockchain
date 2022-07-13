@@ -1,6 +1,9 @@
 package operationdb
 
-import "github.com/radiation-octopus/octopus-blockchain/entity"
+import (
+	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"math/big"
+)
 
 //journalEntry是状态更改日志中的修改条目，可以根据需要还原。
 type journalEntry interface {
@@ -46,6 +49,15 @@ type (
 		account            *entity.Address
 		prevcode, prevhash []byte
 	}
+	// 个人账户变更。
+	balanceChange struct {
+		account *entity.Address
+		prev    *big.Int
+	}
+	nonceChange struct {
+		account *entity.Address
+		prev    uint64
+	}
 )
 
 func (ch codeChange) revert(o *OperationDB) {
@@ -74,4 +86,20 @@ func (r resetObjectChange) revert(db *OperationDB) {
 
 func (r resetObjectChange) dirtied() *entity.Address {
 	return nil
+}
+
+func (ch balanceChange) revert(s *OperationDB) {
+	s.getStateObject(*ch.account).setBalance(ch.prev)
+}
+
+func (ch balanceChange) dirtied() *entity.Address {
+	return ch.account
+}
+
+func (ch nonceChange) revert(s *OperationDB) {
+	s.getStateObject(*ch.account).setNonce(ch.prev)
+}
+
+func (ch nonceChange) dirtied() *entity.Address {
+	return ch.account
 }

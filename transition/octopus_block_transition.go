@@ -7,6 +7,7 @@ import (
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
+	"github.com/radiation-octopus/octopus/utils"
 	"math"
 	"math/big"
 
@@ -156,6 +157,26 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		Err:        vmerr,
 		ReturnData: ret,
 	}, nil
+}
+
+// Failed返回执行是否成功的指示器
+func (result *ExecutionResult) Failed() bool { return result.Err != nil }
+
+//如果执行被“Revert”操作码中止，Revert返回具体的还原原因。注意：如果没有随还原操作码提供的数据，则原因可能为零。
+func (result *ExecutionResult) Revert() []byte {
+	if result.Err != vm.ErrExecutionReverted {
+		return nil
+	}
+	return utils.CopyBytes(result.ReturnData)
+}
+
+// Return是一个帮助函数，用于帮助调用方区分还原原因和函数Return。
+//如果没有发生错误，Return返回执行后的数据。
+func (result *ExecutionResult) Return() []byte {
+	if result.Err != nil {
+		return nil
+	}
+	return utils.CopyBytes(result.ReturnData)
 }
 
 func (st *StateTransition) preCheck() error {

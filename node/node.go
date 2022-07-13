@@ -2,25 +2,27 @@ package node
 
 import (
 	"crypto/ecdsa"
+	crand "crypto/rand"
 	"errors"
 	"fmt"
 	"github.com/prometheus/tsdb/fileutil"
 	"github.com/radiation-octopus/octopus-blockchain/accounts"
-	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/entity/genesis"
+	"github.com/radiation-octopus/octopus-blockchain/entity/hexutil"
 	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
+	"github.com/radiation-octopus/octopus-blockchain/log"
+	"github.com/radiation-octopus/octopus-blockchain/operationutils"
+	"github.com/radiation-octopus/octopus-blockchain/p2p"
+	"github.com/radiation-octopus/octopus-blockchain/params"
+	"github.com/radiation-octopus/octopus-blockchain/rpc"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
-	"github.com/radiation-octopus/octopus/log"
-	"net/rpc"
+	"hash/crc32"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
-)
-
-var (
-	ErrNodeStopped = errors.New("node not started")
 )
 
 func (node *Node) start() {
@@ -78,248 +80,6 @@ func (n *Node) wrapDatabase(db typedb.Database) typedb.Database {
 }
 
 const (
-	datadirPrivateKey      = "nodekey"            // Path within the datadir to the node's private key
-	datadirJWTKey          = "jwtsecret"          // Path within the datadir to the node's jwt secret
-	datadirDefaultKeyStore = "keystore"           // Path within the datadir to the keystore
-	datadirStaticNodes     = "static-nodes.json"  // Path within the datadir to the static node list
-	datadirTrustedNodes    = "trusted-nodes.json" // Path within the datadir to the trusted node list
-	datadirNodeDatabase    = "nodes"              // Path within the datadir to store the node infos
-)
-
-type Config struct {
-	// Name设置节点的实例名称。它不能包含/字符，并在devp2p节点标识符中使用。geth的实例名为“geth”。如果未指定值，则使用当前可执行文件的basename。
-	Name string `toml:"-"`
-
-	// UserIdent（如果设置）用作devp2p节点标识符中的附加组件。
-	UserIdent string `toml:",omitempty"`
-
-	// 版本应设置为程序的版本号。它用于devp2p节点标识符中。
-	Version string `toml:"-"`
-
-	// DataDir是节点应用于任何数据存储要求的文件系统文件夹。配置的数据目录不会直接与注册的服务共享，
-	//相反，这些服务可以使用实用工具方法创建/访问数据库或平面文件。这使得临时节点可以完全驻留在内存中。
-	DataDir string
-
-	// 对等网络的配置。
-	//P2P p2p.Config
-
-	// KeyStoreDir是包含私钥的文件系统文件夹。可以将目录指定为相对路径，在这种情况下，它将相对于当前目录进行解析。
-	//如果KeyStoreDir为空，则默认位置为DataDir的“keystore”子目录。如果DataDir未指定，KeyStoreDir为空，则New会创建临时目录，并在节点停止时销毁。
-	KeyStoreDir string `toml:",omitempty"`
-
-	// ExternalSigner为clef类型签名者指定外部URI
-	ExternalSigner string `toml:",omitempty"`
-
-	// UseLightweightKDF降低了密钥存储scrypt KDF的内存和CPU需求，但牺牲了安全性。
-	UseLightweightKDF bool `toml:",omitempty"`
-
-	// UnsecureUnlockAllowed允许用户在不安全的http环境中解锁帐户。
-	InsecureUnlockAllowed bool `toml:",omitempty"`
-
-	// NoUSB禁用硬件钱包监控和连接。不推荐使用：默认情况下禁用USB监控，必须显式启用。
-	NoUSB bool `toml:",omitempty"`
-
-	// USB支持硬件钱包监控和连接。
-	USB bool `toml:",omitempty"`
-
-	// SmartCardDaemonPath是智能卡守护程序套接字的路径
-	SmartCardDaemonPath string `toml:",omitempty"`
-
-	// IPCPath是放置IPC端点的请求位置。如果路径是一个简单的文件名，
-	//则将其放置在数据目录中（或Windows上的根管道路径上），而如果它是一个可解析的路径名（绝对或相对），则强制执行该特定路径。空路径禁用IPC。
-	IPCPath string
-
-	// HTTPHost是启动HTTP RPC服务器的主机接口。如果此字段为空，则不会启动HTTP API端点。
-	HTTPHost string
-
-	// HTTPPort是要在其上启动HTTP RPC服务器的TCP端口号。默认的零值为/有效，并将随机选取端口号（对临时节点有用）。
-	HTTPPort int `toml:",omitempty"`
-
-	// HTTPCors是发送给请求客户端的跨源资源共享头。请注意，CORS是一种浏览器强制执行的安全性，它对自定义HTTP客户端完全无用。
-	HTTPCors []string `toml:",omitempty"`
-
-	// HTTPVirtualHosts是传入请求允许的虚拟主机名列表。默认情况下，这是{'localhost'}。
-	//使用此功能可以防止DNS重新绑定之类的攻击，DNS重新绑定通过简单地伪装为在同一来源内绕过SOP。
-	//这些攻击不使用COR，因为它们不是跨域的。
-	//通过显式检查主机标头，服务器将不允许对具有恶意主机域的服务器发出请求。直接使用ip地址的请求不受影响
-	HTTPVirtualHosts []string `toml:",omitempty"`
-
-	// HTTPModules是要通过HTTP-RPC接口公开的API模块列表。
-	//如果模块列表为空，则将公开指定为public的所有RPC API端点。
-	HTTPModules []string
-
-	// HTTPTimeouts允许自定义HTTP RPC接口使用的超时值。
-	//HTTPTimeouts rpc.HTTPTimeouts
-
-	// HTTPPathPrefix指定要为其提供http rpc的路径前缀。
-	HTTPPathPrefix string `toml:",omitempty"`
-
-	// AuthAddr是提供经过身份验证的API的侦听地址。
-	AuthAddr string `toml:",omitempty"`
-
-	// AuthPort是提供经过身份验证的API的端口号。
-	AuthPort int `toml:",omitempty"`
-
-	// AuthVirtualHosts是对经过身份验证的api的传入请求允许的虚拟主机名列表。默认情况下，这是{'localhost'}。
-	AuthVirtualHosts []string `toml:",omitempty"`
-
-	// WSHost是启动websocket RPC服务器的主机接口。如果此字段为空，则不会启动websocket API端点。
-	WSHost string
-
-	// WSPort是启动websocket RPC服务器的TCP端口号。默认的零值为/有效，并将随机选取端口号（对临时节点有用）。
-	WSPort int `toml:",omitempty"`
-
-	// WSPathPrefix指定要为其提供ws-rpc服务的路径前缀。
-	WSPathPrefix string `toml:",omitempty"`
-
-	// WSOriginates是从中接受websocket请求的域列表。
-	//请注意，服务器只能对客户端发送的HTTP请求进行操作，无法验证请求头的有效性。
-	WSOrigins []string `toml:",omitempty"`
-
-	// WSModules是要通过websocket RPC接口公开的API模块列表。
-	//如果模块列表为空，则将公开指定为public的所有RPC API端点。
-	WSModules []string
-
-	// WSExposeAll通过WebSocket RPC接口而不仅仅是公共接口公开所有API模块*警告*仅当节点在受信任的网络中运行时才设置此选项，向不受信任的用户公开私有API是一个主要的安全风险。
-	WSExposeAll bool `toml:",omitempty"`
-
-	// GraphQLCors是要发送给请求客户端的跨源资源共享头。
-	//请注意，CORS是一种浏览器强制执行的安全性，它对自定义HTTP客户端完全无用。
-	GraphQLCors []string `toml:",omitempty"`
-
-	// GraphQLVirtualHosts是传入请求允许的虚拟主机名列表。
-	//默认情况下，这是{'localhost'}。使用此功能可以防止DNS重新绑定之类的攻击，DNS重新绑定通过简单地伪装为在同一来源内绕过SOP。
-	//这些攻击不使用COR，因为它们不是跨域的。
-	//通过显式检查主机标头，服务器将不允许对具有恶意主机域的服务器发出请求。直接使用ip地址的请求不受影响
-	GraphQLVirtualHosts []string `toml:",omitempty"`
-
-	// Logger是用于p2p的自定义记录器。服务器
-	Logger log.OctopusLog `toml:",omitempty"`
-
-	staticNodesWarning     bool
-	trustedNodesWarning    bool
-	oldGethResourceWarning bool
-
-	// AllowUnprotectedTxs允许通过RPC发送非EIP-155保护的事务。
-	AllowUnprotectedTxs bool `toml:",omitempty"`
-
-	// JWTSecret是十六进制编码的jwt密钥。
-	JWTSecret string `toml:",omitempty"`
-}
-
-//ResolvePath解析实例目录中的路径。
-func (c *Config) ResolvePath(path string) string {
-	if filepath.IsAbs(path) {
-		return path
-	}
-	if c.DataDir == "" {
-		return ""
-	}
-	// 向后兼容性：确保使用geth 1.4创建的数据目录文件（如果存在）。
-	if warn, isOld := isOldGethResource[path]; isOld {
-		oldpath := ""
-		if c.name() == "geth" {
-			oldpath = filepath.Join(c.DataDir, path)
-		}
-		if oldpath != "" && entity.FileExist(oldpath) {
-			if warn {
-				c.warnOnce(&c.oldGethResourceWarning, "Using deprecated resource file %s, please move this file to the 'geth' subdirectory of datadir.", oldpath)
-			}
-			return oldpath
-		}
-	}
-	return filepath.Join(c.instanceDir(), path)
-}
-
-//对于“geth”实例，这些资源的解析方式不同。
-var isOldGethResource = map[string]bool{
-	"chaindata":          true,
-	"nodes":              true,
-	"nodekey":            true,
-	"static-nodes.json":  false, //没有警告，因为他们有
-	"trusted-nodes.json": false, // 拥有单独的警告。
-}
-
-func (c *Config) name() string {
-	if c.Name == "" {
-		progname := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
-		if progname == "" {
-			panic("empty executable name, set Config.Name")
-		}
-		return progname
-	}
-	return c.Name
-}
-
-func (c *Config) instanceDir() string {
-	if c.DataDir == "" {
-		return ""
-	}
-	return filepath.Join(c.DataDir, c.name())
-}
-
-// KeyDirConfig确定keydirectory的设置
-func (c *Config) KeyDirConfig() (string, error) {
-	var (
-		keydir string
-		err    error
-	)
-	switch {
-	case filepath.IsAbs(c.KeyStoreDir):
-		keydir = c.KeyStoreDir
-	case c.DataDir != "":
-		if c.KeyStoreDir == "" {
-			keydir = filepath.Join(c.DataDir, datadirDefaultKeyStore)
-		} else {
-			keydir, err = filepath.Abs(c.KeyStoreDir)
-		}
-	case c.KeyStoreDir != "":
-		keydir, err = filepath.Abs(c.KeyStoreDir)
-	}
-	return keydir, err
-}
-
-var warnLock sync.Mutex
-
-func (c *Config) warnOnce(w *bool, format string, args ...interface{}) {
-	warnLock.Lock()
-	defer warnLock.Unlock()
-
-	if *w {
-		return
-	}
-	//l := c.Logger
-	//if l == nil {
-	//	l = log.Root()
-	//}
-	//l.Warn(fmt.Sprintf(format, args...))
-	*w = true
-}
-
-// getKeyStoreDir检索密钥目录，并在必要时创建临时目录。
-func getKeyStoreDir(conf *Config) (string, bool, error) {
-	keydir, err := conf.KeyDirConfig()
-	if err != nil {
-		return "", false, err
-	}
-	isEphemeral := false
-	if keydir == "" {
-		// 没有datadir。
-		//keydir, err = os.MkdirTemp("", "keystore")
-		isEphemeral = true
-	}
-
-	if err != nil {
-		return "", false, err
-	}
-	if err := os.MkdirAll(keydir, 0700); err != nil {
-		return "", false, err
-	}
-
-	return keydir, isEphemeral, nil
-}
-
-const (
 	initializingState = iota
 	runningState
 	closedState
@@ -328,28 +88,122 @@ const (
 // 节点是可以在其上注册服务的容器。
 type Node struct {
 	//eventmux      *event.TypeMux
-	config     *Config
-	accman     *accounts.Manager
-	log        log.OctopusLog
-	keyDir     string            // 密钥存储目录
-	keyDirTemp bool              // 如果为true，则Stop将删除密钥目录
-	dirLock    fileutil.Releaser // 防止并发使用实例目录
-	stop       chan struct{}     // 等待终止通知的通道
-	//server        *p2p.Server       // 当前正在运行P2P网络层
-	startStopLock sync.Mutex // 启动/停止由附加锁保护
-	state         int        // 跟踪节点生命周期的状态
+	config        *Config
+	accman        *accounts.Manager
+	log           log.Logger
+	keyDir        string            // 密钥存储目录
+	keyDirTemp    bool              // 如果为true，则Stop将删除密钥目录
+	dirLock       fileutil.Releaser // 防止并发使用实例目录
+	stop          chan struct{}     // 等待终止通知的通道
+	server        *p2p.Server       // 当前正在运行P2P网络层
+	startStopLock sync.Mutex        // 启动/停止由附加锁保护
+	state         int               // 跟踪节点生命周期的状态
 
-	lock sync.Mutex
-	//lifecycles    []Lifecycle // 具有生命周期的所有已注册后端、服务和辅助服务
-	//rpcAPIs       []rpc.API   // 节点当前提供的API列表
-	//http          *httpServer //
-	//ws            *httpServer //
-	//httpAuth      *httpServer //
-	//wsAuth        *httpServer //
-	//ipc           *ipcServer  // 存储有关ipc http服务器的信息
+	lock          sync.Mutex
+	lifecycles    []Lifecycle // 具有生命周期的所有已注册后端、服务和辅助服务
+	rpcAPIs       []rpc.API   // 节点当前提供的API列表
+	http          *httpServer //
+	ws            *httpServer //
+	httpAuth      *httpServer //
+	wsAuth        *httpServer //
+	ipc           *ipcServer  // 存储有关ipc http服务器的信息
 	inprocHandler *rpc.Server // 用于处理API请求的进程内RPC请求处理程序
 
 	databases map[*closeTrackingDB]struct{} // 所有打开的数据库
+}
+
+// New创建一个新的P2P节点，为协议注册做好准备。
+func New(conf *Config) (*Node, error) {
+	// 复制config并解析datadir，以便将来对当前工作目录的更改不会影响节点。
+	confCopy := *conf
+	conf = &confCopy
+	if conf.DataDir != "" {
+		absdatadir, err := filepath.Abs(conf.DataDir)
+		if err != nil {
+			return nil, err
+		}
+		conf.DataDir = absdatadir
+	}
+	if conf.Logger == nil {
+		conf.Logger = log.New()
+	}
+
+	// 确保实例名称不会与数据目录中的其他文件产生奇怪的冲突。
+	if strings.ContainsAny(conf.Name, `/\`) {
+		return nil, errors.New(`Config.Name must not contain '/' or '\'`)
+	}
+	if conf.Name == datadirDefaultKeyStore {
+		return nil, errors.New(`Config.Name cannot be "` + datadirDefaultKeyStore + `"`)
+	}
+	if strings.HasSuffix(conf.Name, ".ipc") {
+		return nil, errors.New(`Config.Name cannot end in ".ipc"`)
+	}
+
+	node := &Node{
+		config:        conf,
+		inprocHandler: rpc.NewServer(),
+		//eventmux:      new(event.TypeMux),
+		log:       conf.Logger,
+		stop:      make(chan struct{}),
+		server:    &p2p.Server{Config: conf.P2P},
+		databases: make(map[*closeTrackingDB]struct{}),
+	}
+
+	// 注册内置API。
+	node.rpcAPIs = append(node.rpcAPIs, node.apis()...)
+
+	// 获取实例目录锁。
+	if err := node.openDataDir(); err != nil {
+		return nil, err
+	}
+	keyDir, isEphem, err := getKeyStoreDir(conf)
+	if err != nil {
+		return nil, err
+	}
+	node.keyDir = keyDir
+	node.keyDirTemp = isEphem
+	// 创建没有后端的空AccountManager。调用方（例如cmd/geth）需要稍后添加后端。
+	node.accman = accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: conf.InsecureUnlockAllowed})
+
+	// 初始化p2p服务器。这将创建节点密钥和发现数据库。
+	node.server.Config.PrivateKey = node.config.NodeKey()
+	node.server.Config.Name = node.config.NodeName()
+	node.server.Config.Logger = node.log
+	if node.server.Config.StaticNodes == nil {
+		node.server.Config.StaticNodes = node.config.StaticNodes()
+	}
+	if node.server.Config.TrustedNodes == nil {
+		node.server.Config.TrustedNodes = node.config.TrustedNodes()
+	}
+	if node.server.Config.NodeDatabase == "" {
+		node.server.Config.NodeDatabase = node.config.NodeDB()
+	}
+
+	// 检查HTTP/WS前缀是否有效。
+	if err := validatePrefix("HTTP", conf.HTTPPathPrefix); err != nil {
+		return nil, err
+	}
+	if err := validatePrefix("WebSocket", conf.WSPathPrefix); err != nil {
+		return nil, err
+	}
+
+	// 配置RPC服务器。
+	node.http = newHTTPServer(node.log, conf.HTTPTimeouts)
+	node.httpAuth = newHTTPServer(node.log, conf.HTTPTimeouts)
+	node.ws = newHTTPServer(node.log, rpc.DefaultHTTPTimeouts)
+	node.wsAuth = newHTTPServer(node.log, rpc.DefaultHTTPTimeouts)
+	node.ipc = newIPCServer(node.log, conf.IPCEndpoint())
+
+	return node, nil
+}
+
+// 服务器检索当前运行的P2P网络层。
+//此方法仅用于检查当前运行的服务器的字段。呼叫者不应启动或停止返回的服务器。
+func (n *Node) Server() *p2p.Server {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	return n.server
 }
 
 // Start启动所有注册的生命周期、RPC服务和p2p网络。节点只能启动一次。
@@ -357,46 +211,302 @@ func (n *Node) Start() error {
 	n.startStopLock.Lock()
 	defer n.startStopLock.Unlock()
 
-	//n.lock.Lock()
+	n.lock.Lock()
 	switch n.state {
 	case runningState:
 		n.lock.Unlock()
-		return terr.ErrNodeRunning
+		return ErrNodeRunning
 	case closedState:
 		n.lock.Unlock()
-		return terr.ErrNodeStopped
+		return ErrNodeStopped
 	}
-	//n.state = runningState
-	//打开网络和RPC端点
-	//err := n.openEndpoints()
-	//lifecycles := make([]Lifecycle, len(n.lifecycles))
-	//copy(lifecycles, n.lifecycles)
-	//n.lock.Unlock()
+	n.state = runningState
+	// 开放网络和RPC端点
+	err := n.openEndpoints()
+	lifecycles := make([]Lifecycle, len(n.lifecycles))
+	copy(lifecycles, n.lifecycles)
+	n.lock.Unlock()
 
-	//检查端点启动是否失败。
-	//if err != nil {
-	//	n.doClose(nil)
-	//	return err
-	//}
+	// 检查端点启动是否失败。
+	if err != nil {
+		n.doClose(nil)
+		return err
+	}
 	// 启动所有注册的生命周期。
-	//var started []Lifecycle
-	//for _, lifecycle := range lifecycles {
-	//	if err = lifecycle.Start(); err != nil {
-	//		break
-	//	}
-	//	started = append(started, lifecycle)
-	//}
+	var started []Lifecycle
+	for _, lifecycle := range lifecycles {
+		if err = lifecycle.Start(); err != nil {
+			break
+		}
+		started = append(started, lifecycle)
+	}
 	// 检查是否有任何生命周期未能启动。
-	//if err != nil {
-	//	n.stopServices(started)
-	//	n.doClose(nil)
-	//}
-	return nil
+	if err != nil {
+		n.stopServices(started)
+		n.doClose(nil)
+	}
+	return err
+}
+
+// 等待块，直到节点关闭。
+func (n *Node) Wait() {
+	<-n.stop
+}
+
+// Close停止节点并释放在Node constructor New中获取的资源。
+func (n *Node) Close() error {
+	n.startStopLock.Lock()
+	defer n.startStopLock.Unlock()
+
+	n.lock.Lock()
+	state := n.state
+	n.lock.Unlock()
+	switch state {
+	case initializingState:
+		// 该节点从未启动。
+		return n.doClose(nil)
+	case runningState:
+		// 节点已启动，释放Start（）获取的资源。
+		var errs []error
+		if err := n.stopServices(n.lifecycles); err != nil {
+			errs = append(errs, err)
+		}
+		return n.doClose(errs)
+	case closedState:
+		return ErrNodeStopped
+	default:
+		panic(fmt.Sprintf("node is in unknown state %d", state))
+	}
+}
+
+// doClose释放New（）获取的资源，收集错误。
+func (n *Node) doClose(errs []error) error {
+	// 关闭数据库。这需要锁，因为它需要与OpenDatabase*同步。
+	n.lock.Lock()
+	n.state = closedState
+	errs = append(errs, n.closeDatabases()...)
+	n.lock.Unlock()
+
+	if err := n.accman.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if n.keyDirTemp {
+		if err := os.RemoveAll(n.keyDir); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	// 释放实例目录锁。
+	n.closeDataDir()
+
+	// 解锁n.Wait。
+	close(n.stop)
+
+	// 报告可能发生的任何错误。
+	switch len(errs) {
+	case 0:
+		return nil
+	case 1:
+		return errs[0]
+	default:
+		return fmt.Errorf("%v", errs)
+	}
+}
+
+// Attach创建连接到进程内API处理程序的RPC客户端。
+func (n *Node) Attach() (*rpc.Client, error) {
+	return rpc.DialInProc(n.inprocHandler), nil
+}
+
+// RPCHandler返回进程内RPC请求处理程序。
+func (n *Node) RPCHandler() (*rpc.Server, error) {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	if n.state == closedState {
+		return nil, ErrNodeStopped
+	}
+	return n.inprocHandler, nil
 }
 
 //AccountManager检索协议堆栈使用的帐户管理器。
 func (n *Node) AccountManager() *accounts.Manager {
 	return n.accman
+}
+
+// openEndpoints启动所有网络和RPC端点。
+func (n *Node) openEndpoints() error {
+	// 启动网络端点
+	n.log.Info("Starting peer-to-peer node", "instance", n.server.Name)
+	if err := n.server.Start(); err != nil {
+		return convertFileLockError(err)
+	}
+	// 启动RPC终结点
+	err := n.startRPC()
+	if err != nil {
+		n.stopRPC()
+		n.server.Stop()
+	}
+	return err
+}
+
+// startRPC是一种辅助方法，用于在节点启动期间配置所有各种RPC端点。
+//由于它对节点的状态进行了某些假设，因此不打算在之后的任何时候调用它。
+func (n *Node) startRPC() error {
+	if err := n.startInProc(); err != nil {
+		return err
+	}
+
+	// 配置IPC。
+	if n.ipc.endpoint != "" {
+		if err := n.ipc.start(n.rpcAPIs); err != nil {
+			return err
+		}
+	}
+	var (
+		servers   []*httpServer
+		open, all = n.GetAPIs()
+	)
+
+	initHttp := func(server *httpServer, apis []rpc.API, port int) error {
+		if err := server.setListenAddr(n.config.HTTPHost, port); err != nil {
+			return err
+		}
+		if err := server.enableRPC(apis, httpConfig{
+			CorsAllowedOrigins: n.config.HTTPCors,
+			Vhosts:             n.config.HTTPVirtualHosts,
+			Modules:            n.config.HTTPModules,
+			prefix:             n.config.HTTPPathPrefix,
+		}); err != nil {
+			return err
+		}
+		servers = append(servers, server)
+		return nil
+	}
+
+	initWS := func(apis []rpc.API, port int) error {
+		server := n.wsServerForPort(port, false)
+		if err := server.setListenAddr(n.config.WSHost, port); err != nil {
+			return err
+		}
+		if err := server.enableWS(n.rpcAPIs, wsConfig{
+			Modules: n.config.WSModules,
+			Origins: n.config.WSOrigins,
+			prefix:  n.config.WSPathPrefix,
+		}); err != nil {
+			return err
+		}
+		servers = append(servers, server)
+		return nil
+	}
+
+	initAuth := func(apis []rpc.API, port int, secret []byte) error {
+		// Enable auth via HTTP
+		server := n.httpAuth
+		if err := server.setListenAddr(n.config.AuthAddr, port); err != nil {
+			return err
+		}
+		if err := server.enableRPC(apis, httpConfig{
+			CorsAllowedOrigins: DefaultAuthCors,
+			Vhosts:             n.config.AuthVirtualHosts,
+			Modules:            DefaultAuthModules,
+			prefix:             DefaultAuthPrefix,
+			jwtSecret:          secret,
+		}); err != nil {
+			return err
+		}
+		servers = append(servers, server)
+		// 通过WS启用身份验证
+		server = n.wsServerForPort(port, true)
+		if err := server.setListenAddr(n.config.AuthAddr, port); err != nil {
+			return err
+		}
+		if err := server.enableWS(apis, wsConfig{
+			Modules:   DefaultAuthModules,
+			Origins:   DefaultAuthOrigins,
+			prefix:    DefaultAuthPrefix,
+			jwtSecret: secret,
+		}); err != nil {
+			return err
+		}
+		servers = append(servers, server)
+		return nil
+	}
+
+	//设置HTTP。
+	if n.config.HTTPHost != "" {
+		// 配置旧版未经身份验证的HTTP。
+		if err := initHttp(n.http, open, n.config.HTTPPort); err != nil {
+			return err
+		}
+	}
+	// 配置WebSocket。
+	if n.config.WSHost != "" {
+		// 遗留未经验证
+		if err := initWS(open, n.config.WSPort); err != nil {
+			return err
+		}
+	}
+	// 配置经过身份验证的API
+	if len(open) != len(all) {
+		jwtSecret, err := n.obtainJWTSecret(n.config.JWTSecret)
+		if err != nil {
+			return err
+		}
+		if err := initAuth(all, n.config.AuthPort, jwtSecret); err != nil {
+			return err
+		}
+	}
+	// 启动服务器
+	for _, server := range servers {
+		if err := server.start(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+//获取JWTSecret从提供的配置或默认位置加载jwt机密。
+//如果两者都不存在，它会生成一个新的秘密并存储到默认位置。
+func (n *Node) obtainJWTSecret(cliParam string) ([]byte, error) {
+	fileName := cliParam
+	if len(fileName) == 0 {
+		// 未提供路径，请使用默认路径
+		fileName = n.ResolvePath(datadirJWTKey)
+	}
+	// 尝试从文件读取
+	if data, err := os.ReadFile(fileName); err == nil {
+		jwtSecret := operationutils.FromHex(strings.TrimSpace(string(data)))
+		if len(jwtSecret) == 32 {
+			log.Info("Loaded JWT secret file", "path", fileName, "crc32", fmt.Sprintf("%#x", crc32.ChecksumIEEE(jwtSecret)))
+			return jwtSecret, nil
+		}
+		log.Error("Invalid JWT secret", "path", fileName, "length", len(jwtSecret))
+		return nil, errors.New("invalid JWT secret")
+	}
+	//需要生成一个
+	jwtSecret := make([]byte, 32)
+	crand.Read(jwtSecret)
+	// 如果我们处于开发模式，不需要保存，只需显示它
+	if fileName == "" {
+		log.Info("Generated ephemeral JWT secret", "secret", hexutil.Encode(jwtSecret))
+		return jwtSecret, nil
+	}
+	if err := os.WriteFile(fileName, []byte(hexutil.Encode(jwtSecret)), 0600); err != nil {
+		return nil, err
+	}
+	log.Info("Generated JWT secret", "path", fileName)
+	return jwtSecret, nil
+}
+
+//startInProc在inproc服务器上注册所有RPC API。
+func (n *Node) startInProc() error {
+	for _, api := range n.rpcAPIs {
+		if err := n.inprocHandler.RegisterName(api.Namespace, api.Service); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (n *Node) openDataDir() error {
@@ -415,6 +525,119 @@ func (n *Node) openDataDir() error {
 	}
 	n.dirLock = release
 	return nil
+}
+
+// RegisterProtocols将后端协议添加到节点的p2p服务器。
+func (n *Node) RegisterProtocols(protocols []p2p.Protocol) {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	if n.state != initializingState {
+		panic("can't register protocols on running/stopped node")
+	}
+	n.server.Protocols = append(n.server.Protocols, protocols...)
+}
+
+func (n *Node) wsServerForPort(port int, authenticated bool) *httpServer {
+	httpServer, wsServer := n.http, n.ws
+	if authenticated {
+		httpServer, wsServer = n.httpAuth, n.wsAuth
+	}
+	if n.config.HTTPHost == "" || httpServer.port == port {
+		return httpServer
+	}
+	return wsServer
+}
+
+// RegisterAPI注册服务在节点上提供的API。
+func (n *Node) RegisterAPIs(apis []rpc.API) {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	if n.state != initializingState {
+		panic("can't register APIs on running/stopped node")
+	}
+	n.rpcAPIs = append(n.rpcAPIs, apis...)
+}
+
+// GetAPI返回两组API，一组不需要身份验证，另一组完整
+func (n *Node) GetAPIs() (unauthenticated, all []rpc.API) {
+	for _, api := range n.rpcAPIs {
+		if !api.Authenticated {
+			unauthenticated = append(unauthenticated, api)
+		}
+	}
+	return unauthenticated, n.rpcAPIs
+}
+
+//DataDir检索协议堆栈使用的当前DataDir。
+//已弃用：此目录中不应存储任何文件，请改用InstanceDir。
+func (n *Node) DataDir() string {
+	return n.config.DataDir
+}
+
+// WSEndpoint返回当前的JSON-RPC over WebSocket端点。
+func (n *Node) WSEndpoint() string {
+	if n.http.wsAllowed() {
+		return "ws://" + n.http.listenAddr() + n.http.wsConfig.prefix
+	}
+	return "ws://" + n.ws.listenAddr() + n.ws.wsConfig.prefix
+}
+
+// stopInProc终止进程内RPC终结点。
+func (n *Node) stopInProc() {
+	n.inprocHandler.Stop()
+}
+
+func (n *Node) stopRPC() {
+	n.http.stop()
+	n.ws.stop()
+	n.httpAuth.stop()
+	n.wsAuth.stop()
+	n.ipc.stop()
+	n.stopInProc()
+}
+
+//stopServices终止正在运行的服务、RPC和p2p网络。它与Start相反。
+func (n *Node) stopServices(running []Lifecycle) error {
+	n.stopRPC()
+
+	// 停止按相反顺序运行生命周期。
+	failure := &StopError{Services: make(map[reflect.Type]error)}
+	for i := len(running) - 1; i >= 0; i-- {
+		if err := running[i].Stop(); err != nil {
+			failure.Services[reflect.TypeOf(running[i])] = err
+		}
+	}
+
+	// 停止p2p网络。
+	n.server.Stop()
+
+	if len(failure.Services) > 0 {
+		return failure
+	}
+	return nil
+}
+
+// closeDatabases关闭所有打开的数据库。
+func (n *Node) closeDatabases() (errors []error) {
+	for db := range n.databases {
+		delete(n.databases, db)
+		if err := db.Database.Close(); err != nil {
+			errors = append(errors, err)
+		}
+	}
+	return errors
+}
+
+func (n *Node) closeDataDir() {
+	// 释放实例目录锁。
+	if n.dirLock != nil {
+		if err := n.dirLock.Release(); err != nil {
+			n.log.Error("Can't release datadir lock", "err", err)
+		}
+		n.dirLock = nil
+	}
 }
 
 // closeTrackingDB包装数据库的Close方法。
@@ -442,14 +665,14 @@ func makeFullNode(node *Node) (*Node, error) {
 	//定义oct节点的基本配置
 	datadir := os.TempDir()
 	config := &Config{
-		Name: "geth",
-		//Version: params.Version,
+		Name:    "geth",
+		Version: params.Version,
 		DataDir: datadir,
-		//P2P: p2p.Config{
-		//	ListenAddr:  "0.0.0.0:0",
-		//	NoDiscovery: true,
-		//	MaxPeers:    25,
-		//},
+		P2P: p2p.Config{
+			ListenAddr:  "0.0.0.0:0",
+			NoDiscovery: true,
+			MaxPeers:    25,
+		},
 		UseLightweightKDF: true,
 	}
 	// 创建节点并在其上配置完整的章鱼节点
@@ -501,9 +724,9 @@ func NewNodeCfg(node *Node, conf *Config) (*Node, error) {
 		}
 		conf.DataDir = absdatadir
 	}
-	//if conf.Logger == nil {
-	//	conf.Logger = log.New()
-	//}
+	if conf.Logger == nil {
+		conf.Logger = log.New()
+	}
 
 	// 确保实例名称不会与数据目录中的其他文件产生奇怪的冲突。
 	if strings.ContainsAny(conf.Name, `/\`) {
@@ -521,6 +744,9 @@ func NewNodeCfg(node *Node, conf *Config) (*Node, error) {
 	node.log = conf.Logger
 	node.stop = make(chan struct{})
 	node.databases = make(map[*closeTrackingDB]struct{})
+	node.server = &p2p.Server{
+		Config: conf.P2P,
+	}
 	//node := &Node{
 	//	config:        conf,
 	//	inprocHandler: rpc.NewServer(),
@@ -548,18 +774,18 @@ func NewNodeCfg(node *Node, conf *Config) (*Node, error) {
 	node.accman = accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: conf.InsecureUnlockAllowed})
 
 	// 初始化p2p服务器。这将创建节点密钥和发现数据库。
-	//node.server.Config.PrivateKey = node.config.NodeKey()
-	//node.server.Config.Name = node.config.NodeName()
-	//node.server.Config.Logger = node.log
-	//if node.server.Config.StaticNodes == nil {
-	//	node.server.Config.StaticNodes = node.config.StaticNodes()
-	//}
-	//if node.server.Config.TrustedNodes == nil {
-	//	node.server.Config.TrustedNodes = node.config.TrustedNodes()
-	//}
-	//if node.server.Config.NodeDatabase == "" {
-	//	node.server.Config.NodeDatabase = node.config.NodeDB()
-	//}
+	node.server.Config.PrivateKey = node.config.NodeKey()
+	node.server.Config.Name = node.config.NodeName()
+	node.server.Config.Logger = node.log
+	if node.server.Config.StaticNodes == nil {
+		node.server.Config.StaticNodes = node.config.StaticNodes()
+	}
+	if node.server.Config.TrustedNodes == nil {
+		node.server.Config.TrustedNodes = node.config.TrustedNodes()
+	}
+	if node.server.Config.NodeDatabase == "" {
+		node.server.Config.NodeDatabase = node.config.NodeDB()
+	}
 
 	// 检查HTTP/WS前缀是否有效。
 	if err := validatePrefix("HTTP", conf.HTTPPathPrefix); err != nil {
@@ -570,28 +796,13 @@ func NewNodeCfg(node *Node, conf *Config) (*Node, error) {
 	}
 
 	// 配置RPC服务器。
-	//node.http = newHTTPServer(node.log, conf.HTTPTimeouts)
-	//node.httpAuth = newHTTPServer(node.log, conf.HTTPTimeouts)
-	//node.ws = newHTTPServer(node.log, rpc.DefaultHTTPTimeouts)
-	//node.wsAuth = newHTTPServer(node.log, rpc.DefaultHTTPTimeouts)
-	//node.ipc = newIPCServer(node.log, conf.IPCEndpoint())
+	node.http = newHTTPServer(node.log, conf.HTTPTimeouts)
+	node.httpAuth = newHTTPServer(node.log, conf.HTTPTimeouts)
+	node.ws = newHTTPServer(node.log, rpc.DefaultHTTPTimeouts)
+	node.wsAuth = newHTTPServer(node.log, rpc.DefaultHTTPTimeouts)
+	node.ipc = newIPCServer(node.log, conf.IPCEndpoint())
 
 	return node, nil
-}
-
-// validatePrefix检查“path”是否是RPC前缀选项的有效配置值。
-func validatePrefix(what, path string) error {
-	if path == "" {
-		return nil
-	}
-	if path[0] != '/' {
-		return fmt.Errorf(`%s RPC path prefix %q does not contain leading "/"`, what, path)
-	}
-	if strings.ContainsAny(path, "?#") {
-		// 这只是为了避免混淆。虽然这些将正确匹配（即，如果URL转义到路径中，它们将匹配），但用户在命令行上设置时不容易理解。
-		return fmt.Errorf("%s RPC path prefix %q contains URL meta-characters", what, path)
-	}
-	return nil
 }
 
 // makeGenesis基于一些预定义的水龙头帐户创建自定义的八单元genesis块。

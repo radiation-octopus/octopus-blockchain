@@ -16,6 +16,7 @@ var (
 	Big9          = big.NewInt(9)
 	Big10         = big.NewInt(10)
 	Big32         = big.NewInt(32)
+	Big256        = big.NewInt(256)
 	BigMinus99    = big.NewInt(-99)
 )
 

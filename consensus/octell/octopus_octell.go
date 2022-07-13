@@ -7,9 +7,10 @@ import (
 	"github.com/hashicorp/golang-lru/simplelru"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
+	"github.com/radiation-octopus/octopus-blockchain/rpc"
 	"github.com/radiation-octopus/octopus/director"
-	"github.com/radiation-octopus/octopus/log"
 	"math/big"
 	"math/rand"
 	"os"
@@ -382,7 +383,7 @@ type Config struct {
 	// 设置后，远程密封器发送的通知将是块头JSON对象，而不是工作包数组。
 	NotifyFull bool
 
-	//Log log.OctopusLog `toml:"-"`
+	//Log log.Logger `toml:"-"`
 }
 
 // Octell是一个基于实现Octell算法的工作证明的共识引擎。
@@ -406,6 +407,41 @@ type Octell struct {
 
 	lock      sync.Mutex // 确保内存缓存和挖掘字段的线程安全
 	closeOnce sync.Once  // 确保出口通道不会关闭两次。
+}
+
+// API实现共识。引擎，返回面向用户的RPC API。
+func (o *Octell) APIs(chain consensus.ChainHeaderReader) []rpc.API {
+	// 为了确保向后兼容性，我们向eth和ethash名称空间公开了ethash rpcapis。
+	return []rpc.API{
+		{
+			Namespace: "eth",
+			Version:   "1.0",
+			Service:   &API{o},
+		},
+		{
+			Namespace: "ethash",
+			Version:   "1.0",
+			Service:   &API{o},
+		},
+	}
+}
+
+//关闭关闭退出通道以通知所有后端线程退出。
+func (o *Octell) Close() error {
+	return o.StopRemoteSealer()
+}
+
+// StopRemoteSealer停止远程密封
+func (o *Octell) StopRemoteSealer() error {
+	o.closeOnce.Do(func() {
+		//如果未分配出口通道，则短路。
+		if o.remote == nil {
+			return
+		}
+		close(o.remote.requestExit)
+		<-o.remote.exitCh
+	})
+	return nil
 }
 
 func (o *Octell) octellStart(chainConfig *entity.ChainConfig) {

@@ -2,7 +2,7 @@ package octell
 
 import (
 	"github.com/radiation-octopus/octopus-blockchain/entity"
-	"github.com/radiation-octopus/octopus/log"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 )
 
 type OctellStart struct {

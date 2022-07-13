@@ -1,21 +1,33 @@
 package operationdb
 
 import (
+	"errors"
 	"fmt"
 	"github.com/VictoriaMetrics/fastcache"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
-	"github.com/radiation-octopus/octopus-blockchain/operationdb/tire"
+	"github.com/radiation-octopus/octopus-blockchain/log"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb/trie"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
-	"github.com/radiation-octopus/octopus/log"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
 	"sync"
 )
+
+type proofList [][]byte
+
+func (n *proofList) Put(key []byte, value []byte) error {
+	*n = append(*n, value)
+	return nil
+}
+
+func (n *proofList) Delete(key []byte) error {
+	panic("not supported")
+}
 
 type DatabaseI interface {
 	// 打开主帐户trie。
@@ -34,7 +46,7 @@ type DatabaseI interface {
 	ContractCodeSize(addrHash, codeHash entity.Hash) (int, error)
 
 	// TrieDB检索用于数据存储的低级trie数据库。
-	TrieDB() *tire.TrieDatabase
+	TrieDB() *trie.TrieDatabase
 }
 
 type TrieI interface {
@@ -58,14 +70,14 @@ type TrieI interface {
 	Hash() entity.Hash
 
 	// Commit将所有节点写入trie的内存数据库，跟踪内部和外部（用于帐户尝试）引用。
-	Commit(onleaf tire.LeafCallback) (entity.Hash, int, error)
+	Commit(onleaf trie.LeafCallback) (entity.Hash, int, error)
 
 	// NodeIterator返回一个迭代器，该迭代器返回trie的节点。迭代从给定开始键之后的键开始。
 	//NodeIterator(startKey []byte) trie.NodeIterator
 
 	// Prove为key构造了一个Merkle证明。结果包含指向键处值的路径上的所有编码节点。值本身也包含在最后一个节点中，可以通过验证证明来检索。
 	//如果trie不包含key的值，则返回的证明将包含该key现有前缀最长的所有节点（至少是根节点），以证明没有该key的节点结束。
-	//Prove(key []byte, fromLevel uint, proofDb KeyValueWriter) terr
+	Prove(key []byte, fromLevel uint, proofDb typedb.KeyValueWriter) error
 }
 
 //数据库操作结构体
@@ -87,7 +99,7 @@ type OperationDB struct {
 
 	thash   entity.Hash
 	txIndex int
-	logs    map[entity.Hash][]*log.OctopusLog //日志
+	logs    map[entity.Hash][]*log.Logger //日志
 	logSize uint
 
 	preimages map[entity.Hash][]byte
@@ -112,6 +124,10 @@ type OperationDB struct {
 	StorageUpdated int
 	AccountDeleted int
 	StorageDeleted int
+}
+
+func (s *OperationDB) Error() error {
+	return s.dbErr
 }
 
 //setError记住调用它时使用的第一个非零错误。
@@ -230,6 +246,21 @@ func (o *OperationDB) SetCode(address entity.Address, code []byte) {
 	}
 }
 
+func (o *OperationDB) SetBalance(addr entity.Address, amount *big.Int) {
+	stateObject := o.GetOrNewOperationObject(addr)
+	if stateObject != nil {
+		stateObject.SetBalance(amount)
+	}
+}
+
+// 设置存储将指定帐户的整个存储替换为给定存储。此函数只能用于调试。
+func (o *OperationDB) SetStorage(addr entity.Address, storage map[entity.Hash]entity.Hash) {
+	stateObject := o.GetOrNewOperationObject(addr)
+	if stateObject != nil {
+		stateObject.SetStorage(storage)
+	}
+}
+
 func (o *OperationDB) GetCodeSize(address entity.Address) int {
 	panic("implement me")
 }
@@ -302,7 +333,7 @@ func (o *OperationDB) Snapshot() int {
 	panic("implement me")
 }
 
-func (o *OperationDB) AddLog(octopusLog *log.OctopusLog) {
+func (o *OperationDB) AddLog(octopusLog *log.Logger) {
 	panic("implement me")
 }
 
@@ -366,6 +397,40 @@ func (o *OperationDB) IntermediateRoot(deleteEmptyObjects bool) entity.Hash {
 	return o.trieI.Hash()
 }
 
+// StorageTrie返回帐户的存储trie。返回值为副本，对于不存在的帐户，返回值为零。
+func (o *OperationDB) StorageTrie(addr entity.Address) TrieI {
+	stateObject := o.getStateObject(addr)
+	if stateObject == nil {
+		return nil
+	}
+	cpy := stateObject.deepCopy(o)
+	cpy.updateTrie(o.db)
+	return cpy.getTrie(o.db)
+}
+
+// GetStorageProof returns the Merkle proof for given storage slot.
+func (o *OperationDB) GetStorageProof(a entity.Address, key entity.Hash) ([][]byte, error) {
+	var proof proofList
+	trieI := o.StorageTrie(a)
+	if trieI == nil {
+		return proof, errors.New("storage trie for requested address does not exist")
+	}
+	err := trieI.Prove(crypto.Keccak256(key.Bytes()), 0, &proof)
+	return proof, err
+}
+
+// GetProof返回给定帐户的Merkle证明。
+func (o *OperationDB) GetProof(addr entity.Address) ([][]byte, error) {
+	return o.GetProofByHash(crypto.Keccak256Hash(addr.Bytes()))
+}
+
+// GetProofByHash返回给定帐户的Merkle证明。
+func (o *OperationDB) GetProofByHash(addrHash entity.Hash) ([][]byte, error) {
+	var proof proofList
+	err := o.trieI.Prove(addrHash[:], 0, &proof)
+	return proof, err
+}
+
 //deleteOperationObject从状态trie中删除给定对象。
 func (o *OperationDB) deleteOperationObject(obj *OperationObject) {
 	// 跟踪从trie中删除帐户所浪费的时间
@@ -400,7 +465,7 @@ func (s *OperationDB) updateOperationObject(obj *OperationObject) {
 	if err := rlp.DecodeBytes(enc, data); err != nil {
 		log.Error("Failed to decode operation object", "addr", addr, "err", err)
 	}
-	fmt.Println(data.Balance)
+	//fmt.Println(data.Balance)
 	// 如果状态快照处于活动状态，请缓存数据直到提交。
 	//注意，此更新机制与删除并不对称，因为虽然它足以在提交时跟踪帐户更新，但删除需要在事务边界级别进行跟踪，以确保捕获状态清除。
 	//if s.snap != nil {
@@ -743,7 +808,7 @@ func NewOperationDb(root entity.Hash, db DatabaseI) (*OperationDB, error) {
 		OperationObjects:        make(map[entity.Address]*OperationObject),
 		OperationObjectsPending: make(map[entity.Address]struct{}),
 		OperationObjectsDirty:   make(map[entity.Address]struct{}),
-		logs:                    make(map[entity.Hash][]*log.OctopusLog),
+		logs:                    make(map[entity.Hash][]*log.Logger),
 		preimages:               make(map[entity.Hash][]byte),
 		journal:                 NewJournal(),
 		accessList:              newAccessList(),
@@ -761,7 +826,7 @@ func (s *OperationDB) Copy() *OperationDB {
 		OperationObjectsPending: make(map[entity.Address]struct{}, len(s.OperationObjectsPending)),
 		OperationObjectsDirty:   make(map[entity.Address]struct{}, len(s.journal.Dirties)),
 		//refund:              s.refund,
-		logs:      make(map[entity.Hash][]*log.OctopusLog, len(s.logs)),
+		logs:      make(map[entity.Hash][]*log.Logger, len(s.logs)),
 		logSize:   s.logSize,
 		preimages: make(map[entity.Hash][]byte, len(s.preimages)),
 		journal:   NewJournal(),
@@ -793,9 +858,9 @@ func (s *OperationDB) Copy() *OperationDB {
 		state.OperationObjectsDirty[addr] = struct{}{}
 	}
 	for hash, logs := range s.logs {
-		cpy := make([]*log.OctopusLog, len(logs))
+		cpy := make([]*log.Logger, len(logs))
 		for i, l := range logs {
-			cpy[i] = new(log.OctopusLog)
+			cpy[i] = new(log.Logger)
 			*cpy[i] = *l
 		}
 		state.logs[hash] = cpy
@@ -1164,13 +1229,13 @@ func (sf *subfetcher) loop() {
 }
 
 type cachingDB struct {
-	db            *tire.TrieDatabase
+	db            *trie.TrieDatabase
 	codeSizeCache *lru.Cache
 	codeCache     *fastcache.Cache
 }
 
 func (c *cachingDB) OpenTrie(root entity.Hash) (TrieI, error) {
-	tr, err := tire.NewSecure(entity.Hash{}, root, c.db)
+	tr, err := trie.NewSecure(entity.Hash{}, root, c.db)
 	if err != nil {
 		return nil, err
 	}
@@ -1184,7 +1249,7 @@ func (c *cachingDB) OpenStorageTrie(addrHash, root entity.Hash) (TrieI, error) {
 //CopyTrie返回给定trie的独立副本。
 func (c *cachingDB) CopyTrie(trieI TrieI) TrieI {
 	switch t := trieI.(type) {
-	case *tire.SecureTrie:
+	case *trie.SecureTrie:
 		return t.Copy()
 	default:
 		panic(fmt.Errorf("unknown trie type %T", t))
@@ -1199,6 +1264,6 @@ func (c *cachingDB) ContractCodeSize(addrHash, codeHash entity.Hash) (int, error
 	panic("implement me")
 }
 
-func (c *cachingDB) TrieDB() *tire.TrieDatabase {
+func (c *cachingDB) TrieDB() *trie.TrieDatabase {
 	return c.db
 }

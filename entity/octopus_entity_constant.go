@@ -2,6 +2,7 @@ package entity
 
 import (
 	"encoding/hex"
+	"github.com/radiation-octopus/octopus-blockchain/entity/hexutil"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus/utils"
 	"golang.org/x/crypto/sha3"
@@ -18,6 +19,16 @@ const (
 
 //定义hash字节类型
 type Hash [HashLength]byte
+
+// UnmarshalText以十六进制语法解析哈希。
+func (h *Hash) UnmarshalText(input []byte) error {
+	return hexutil.UnmarshalFixedText("Hash", input, h[:])
+}
+
+// String实现了stringer接口，在完全登录到文件时，记录器也会使用它。
+func (h Hash) String() string {
+	return h.Hex()
+}
 
 type HashStruct struct {
 	Hash Hash
@@ -40,14 +51,23 @@ func (a *Address) SetBytes(b []byte) {
 	copy(a[AddressLength-len(b):], b)
 }
 
+// BigToHash将b的字节表示形式设置为哈希。如果b大于len（h），b将从左侧裁剪。
+func BigToHash(b *big.Int) Hash { return BytesToHash(b.Bytes()) }
+
 // BigToAddress返回字节值为b的地址。如果b大于len（h），则从左侧裁剪b。
 func BigToAddress(b *big.Int) Address { return BytesToAddress(b.Bytes()) }
 
 //HexToAddress返回字节值为s的地址。如果s大于len（h），则s将从左侧裁剪。
 func HexToAddress(s string) Address { return BytesToAddress(operationutils.FromHex(s)) }
 
+// HexToHash将s的字节表示形式设置为哈希。如果b大于len（h），b将从左侧裁剪。
+func HexToHash(s string) Hash { return BytesToHash(operationutils.FromHex(s)) }
+
 // Bytes获取基础哈希的字节表示形式。
 func (h Hash) Bytes() []byte { return h[:] }
+
+// 大将哈希转换为大整数。
+func (h Hash) Big() *big.Int { return new(big.Int).SetBytes(h[:]) }
 
 // String 实现 fmt.Stringer.
 func (a Address) String() string {

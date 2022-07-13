@@ -1,8 +1,8 @@
 package vm
 
 import (
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
+	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"math"
 )
 
@@ -44,7 +44,7 @@ func getData(data []byte, start uint64, size uint64) []byte {
 	if end > length {
 		end = length
 	}
-	return common.RightPadBytes(data[start:end], int(size))
+	return operationutils.RightPadBytes(data[start:end], int(size))
 }
 
 // toWordSize returns the ceiled word size required for memory expansion.

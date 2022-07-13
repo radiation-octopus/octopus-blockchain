@@ -3,9 +3,9 @@ package blockchain
 import (
 	crand "crypto/rand"
 	"errors"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 	"math"
 	"math/big"
 	mrand "math/rand"

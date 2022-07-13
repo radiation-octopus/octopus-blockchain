@@ -6,10 +6,11 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
-	"github.com/radiation-octopus/octopus/log"
 	"math/big"
+	"sync/atomic"
 )
 
 type BlockContext struct {
@@ -118,7 +119,7 @@ type StateDB interface {
 	RevertToSnapshot(int)
 	Snapshot() int
 
-	AddLog(*log.OctopusLog)
+	AddLog(*log.Logger)
 	AddPreimage(entity.Hash, []byte)
 
 	ForEachStorage(entity.Address, func(entity.Hash, entity.Hash) bool) error
@@ -304,6 +305,16 @@ func (ovm *OVM) DelegateCall(caller ContractRef, addr entity.Address, input []by
 		}
 	}
 	return ret, gas, err
+}
+
+// 取消取消任何正在运行的EVM操作。这可以同时调用，多次调用是安全的。
+func (ovm *OVM) Cancel() {
+	atomic.StoreInt32(&ovm.abort, 1)
+}
+
+// 如果调用了Cancel，则Cancelled返回true
+func (ovm *OVM) Cancelled() bool {
+	return atomic.LoadInt32(&ovm.abort) == 1
 }
 
 func GetHashFn(ref *block2.Header, chain ChainContext) func(n uint64) entity.Hash {

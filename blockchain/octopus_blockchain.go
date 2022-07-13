@@ -3,23 +3,24 @@ package blockchain
 import (
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/common/prque"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/radiation-octopus/octopus-blockchain/blockchain/blockchainconfig"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	genesis2 "github.com/radiation-octopus/octopus-blockchain/entity/genesis"
+	"github.com/radiation-octopus/octopus-blockchain/entity/prque"
 	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
 	"github.com/radiation-octopus/octopus-blockchain/event"
+	"github.com/radiation-octopus/octopus-blockchain/internal/syncx"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/node"
 	"github.com/radiation-octopus/octopus-blockchain/oct/octconfig"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
-	"github.com/radiation-octopus/octopus-blockchain/operationdb/tire"
+	"github.com/radiation-octopus/octopus-blockchain/operationdb/trie"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
 	"github.com/radiation-octopus/octopus-blockchain/vm"
-	"github.com/radiation-octopus/octopus/log"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -59,15 +60,24 @@ type BlockChain struct {
 	TxLookupLimit uint64 //`autoInjectCfg:"octopus.blockchain.binding.genesis.header.txLookupLimit"` //一个区块容纳最大交易限制
 	hc            *HeaderChain
 
+	rmLogsFeed    event.Feed
 	chainFeed     event.Feed
 	chainHeadFeed event.Feed
+	logsFeed      event.Feed
 	blockProcFeed event.Feed //区块过程注入事件
 	scope         event.SubscriptionScope
 	genesisBlock  *block2.Block
 
-	//chainmu *syncx.ClosableMutex	//互斥锁，同步链写入操作使用
-	currentBlock atomic.Value // 当前区块
-	//currentFastBlock atomic.Value	//快速同步链的当前区块
+	chainmu          *syncx.ClosableMutex //互斥锁，同步链写入操作使用
+	currentBlock     atomic.Value         // 当前区块
+	currentFastBlock atomic.Value         //快速同步链的当前区块
+
+	stateCache    operationdb.DatabaseI // 要在导入之间重用的状态数据库（包含状态缓存）
+	bodyCache     *lru.Cache            // 最近块体的缓存
+	bodyRLPCache  *lru.Cache            // RLP编码格式的最新块体缓存
+	receiptsCache *lru.Cache            // 缓存每个块的最新收据
+	blockCache    *lru.Cache            // 缓存最近的整个块
+	txLookupCache *lru.Cache            // 缓存最新的事务查找数据。
 
 	operationCache operationdb.DatabaseI // 要在导入之间重用的状态数据库（包含状态缓存）
 	futureBlocks   *lru.Cache            //新区块缓存区
@@ -84,10 +94,44 @@ type BlockChain struct {
 	vmConfig vm.Config
 }
 
+func (bc *BlockChain) HasHeader(hash entity.Hash, u uint64) bool {
+	panic("implement me")
+}
+
+func (bc *BlockChain) InsertHeaderChain(headers []*block2.Header, i int) (int, error) {
+	panic("implement me")
+}
+
+func (bc *BlockChain) SetHead(u uint64) error {
+	panic("implement me")
+}
+
+func (bc *BlockChain) HasFastBlock(hash entity.Hash, u uint64) bool {
+	panic("implement me")
+}
+
+func (bc *BlockChain) CurrentFastBlock() *block2.Block {
+	panic("implement me")
+}
+
+func (bc *BlockChain) SnapSyncCommitHead(hash entity.Hash) error {
+	panic("implement me")
+}
+
+func (bc *BlockChain) InsertReceiptChain(blocks block2.Blocks, receipts []block2.Receipts, u uint64) (int, error) {
+	panic("implement me")
+}
+
 //// IsLondon返回num是否等于或大于London fork块。
 //func (c *entity.ChainConfig) IsLondon(num *big.Int) bool {
 //	return isForked(c.LondonBlock, num)
 //}
+
+// StopInsert中断所有插入方法，使它们尽快返回errInsertionInterrupted。
+//调用此方法后，将永久禁用插入。
+func (bc *BlockChain) StopInsert() {
+	atomic.StoreInt32(&bc.procInterrupt, 1)
+}
 
 //isForked返回在块s上调度的fork是否在给定的头块上处于活动状态。
 func isForked(s, head *big.Int) bool {
@@ -99,7 +143,7 @@ func isForked(s, head *big.Int) bool {
 
 //迭代器
 type insertIterator struct {
-	chain Blocks //正在迭代链
+	chain block2.Blocks //正在迭代链
 
 	results <-chan error // 来自共识引擎验证结果接收器
 	errors  []error      // 错误接收属性
@@ -203,6 +247,11 @@ func (bc *BlockChain) GetDB() typedb.Database {
 	return bc.db
 }
 
+// Genesis检索链的Genesis块。
+func (bc *BlockChain) Genesis() *block2.Block {
+	return bc.genesisBlock
+}
+
 func (bc *BlockChain) getBlockChain() *BlockChain {
 	return bc
 }
@@ -234,7 +283,7 @@ func newBlockChain(bc *BlockChain, cacheConfig *CacheConfig, chainConfig *entity
 	//	engine:       engine,
 	//}
 	bc.forker = NewForkChoice(bc, shouldPreserve)
-	bc.operationCache = operationdb.NewDatabaseWithConfig(bc.db, &tire.Config{
+	bc.operationCache = operationdb.NewDatabaseWithConfig(bc.db, &trie.Config{
 		//Cache:     cacheConfig.TrieCleanLimit,
 		//Journal:   cacheConfig.TrieCleanJournal,
 		//Preimages: cacheConfig.Preimages,
@@ -355,6 +404,23 @@ func (bc *BlockChain) Reset() error {
 	return bc.ResetWithGenesisBlock(bc.genesisBlock)
 }
 
+// GetReceiptsByHash检索给定块中所有事务的收据。
+func (bc *BlockChain) GetReceiptsByHash(hash entity.Hash) block2.Receipts {
+	if receipts, ok := bc.receiptsCache.Get(hash); ok {
+		return receipts.(block2.Receipts)
+	}
+	number := rawdb.ReadHeaderNumber(bc.db, hash)
+	if number == nil {
+		return nil
+	}
+	receipts := rawdb.ReadReceipts(bc.db, hash, *number, bc.chainConfig)
+	if receipts == nil {
+		return nil
+	}
+	bc.receiptsCache.Add(hash, receipts)
+	return receipts
+}
+
 // ResetWithGenesisBlock清除整个区块链，将其恢复到指定的genesis状态。
 func (bc *BlockChain) ResetWithGenesisBlock(genesis *block2.Block) error {
 	// 转储整个块链并清除缓存
@@ -454,9 +520,7 @@ func (bc *BlockChain) procFutureBlocks() {
 	}
 }
 
-type Blocks []*block2.Block
-
-func (bc *BlockChain) InsertChain(chain Blocks) (int, error) {
+func (bc *BlockChain) InsertChain(chain block2.Blocks) (int, error) {
 	for i := 1; i < len(chain); i++ {
 		block, prev := chain[i], chain[i-1]
 		fmt.Println("校验区块父hash是否正确：", block, prev)
@@ -465,7 +529,7 @@ func (bc *BlockChain) InsertChain(chain Blocks) (int, error) {
 	return bc.insertChain(chain, true, true)
 }
 
-func (bc *BlockChain) insertChain(chain Blocks, verifySeals, setHead bool) (int, error) {
+func (bc *BlockChain) insertChain(chain block2.Blocks, verifySeals, setHead bool) (int, error) {
 
 	//表头验证器
 	headers := make([]*block2.Header, len(chain))
@@ -517,7 +581,7 @@ func (bc *BlockChain) insertChain(chain Blocks, verifySeals, setHead bool) (int,
 }
 
 //创建一个迭代器
-func newInsertIterator(chain Blocks, results <-chan error, validator Validator) *insertIterator {
+func newInsertIterator(chain block2.Blocks, results <-chan error, validator Validator) *insertIterator {
 	return &insertIterator{
 		chain:     chain,
 		results:   results,
@@ -528,7 +592,7 @@ func newInsertIterator(chain Blocks, results <-chan error, validator Validator) 
 }
 
 // WriteBlockAndSetHead将给定块和所有关联状态写入数据库，并将该块作为新链头应用。
-func (bc *BlockChain) WriteBlockAndSetHead(block *block2.Block, receipts []*block2.Receipt, logs []*log.OctopusLog, state *operationdb.OperationDB, emitHeadEvent bool) (status WriteStatus, err error) {
+func (bc *BlockChain) WriteBlockAndSetHead(block *block2.Block, receipts []*block2.Receipt, logs []*log.Logger, state *operationdb.OperationDB, emitHeadEvent bool) (status WriteStatus, err error) {
 	//if !bc.chainmu.TryLock() {
 	//	return NonStatTy, errChainStopped
 	//}
@@ -539,7 +603,7 @@ func (bc *BlockChain) WriteBlockAndSetHead(block *block2.Block, receipts []*bloc
 
 var lastWrite uint64
 
-func (bc *BlockChain) writeBlockWithState(block *block2.Block, receipts []*block2.Receipt, logs []*log.OctopusLog, operation *operationdb.OperationDB) error {
+func (bc *BlockChain) writeBlockWithState(block *block2.Block, receipts []*block2.Receipt, logs []*log.Logger, operation *operationdb.OperationDB) error {
 	// 计算方块的总难度
 	ptd := bc.GetTd(block.ParentHash(), block.NumberU64()-1)
 	if ptd == nil {
@@ -659,15 +723,15 @@ const (
 //请注意，此处不会处理新的头块，呼叫者需要从外部处理。
 func (bc *BlockChain) reorg(oldBlock, newBlock *block2.Block) error {
 	var (
-		newChain    Blocks
-		oldChain    Blocks
+		newChain    block2.Blocks
+		oldChain    block2.Blocks
 		commonBlock *block2.Block
 
 		deletedTxs []entity.Hash
 		addedTxs   []entity.Hash
 
-		//deletedLogs [][]*log.OctopusLog
-		//rebirthLogs [][]*log.OctopusLog
+		//deletedLogs [][]*log.Logger
+		//rebirthLogs [][]*log.Logger
 	)
 	// 将长链减少到与短链相同的数量
 	if oldBlock.NumberU64() > newBlock.NumberU64() {
@@ -807,7 +871,7 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *block2.Block) error {
 	return nil
 }
 
-func (bc *BlockChain) writeBlockAndSetHead(block *block2.Block, receipts []*block2.Receipt, logs []*log.OctopusLog, state *operationdb.OperationDB, emitHeadEvent bool) (status WriteStatus, err error) {
+func (bc *BlockChain) writeBlockAndSetHead(block *block2.Block, receipts []*block2.Receipt, logs []*log.Logger, state *operationdb.OperationDB, emitHeadEvent bool) (status WriteStatus, err error) {
 	if err := bc.writeBlockWithState(block, receipts, logs, state); err != nil {
 		return NonStatTy, err
 	}

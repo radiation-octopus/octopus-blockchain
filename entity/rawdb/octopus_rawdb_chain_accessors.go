@@ -7,9 +7,9 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
-	"github.com/radiation-octopus/octopus/log"
 	"math/big"
 )
 
@@ -36,6 +36,17 @@ func isCanon(reader typedb.AncientReaderOp, number uint64, hash entity.Hash) boo
 		return false
 	}
 	return bytes.Equal(h, hash[:])
+}
+
+// HasReceives验证是否存在属于某个块的所有交易凭证。
+func HasReceipts(db typedb.Reader, hash entity.Hash, number uint64) bool {
+	if isCanon(db, number, hash) {
+		return true
+	}
+	if has, err := db.IsHas(blockReceiptsKey(number, hash)); !has || err != nil {
+		return false
+	}
+	return true
 }
 
 // ReadBodyRLP检索RLP编码中的块体（事务和未结项）。
@@ -69,6 +80,92 @@ func ReadReceiptsRLP(db typedb.Reader, hash entity.Hash, number uint64) rlp.RawV
 		return nil
 	})
 	return data
+}
+
+// ReadReceipts检索属于块的所有事务收据，包括其相应的元数据字段。
+//如果无法填充这些元数据字段，则返回nil。
+//当前实现通过读取收据的相应块体来填充这些元数据字段，因此，如果未找到块体，即使收据本身已存储，也将返回nil。
+func ReadReceipts(db typedb.Reader, hash entity.Hash, number uint64, config *entity.ChainConfig) block2.Receipts {
+	// 我们从块体中导出了许多字段，在收据旁边检索
+	receipts := ReadRawReceipts(db, hash, number)
+	if receipts == nil {
+		return nil
+	}
+	body := ReadBody(db, hash, number)
+	if body == nil {
+		log.Error("Missing body but have receipt", "hash", hash, "number", number)
+		return nil
+	}
+	if err := receipts.DeriveFields(config, hash, number, body.Transactions); err != nil {
+		log.Error("Failed to derive block receipts fields", "hash", hash, "number", number, "err", err)
+		return nil
+	}
+	return receipts
+}
+
+// ReadHeaderRange返回rlp编码的标头，从“number”开始，向后返回genesis。
+//此方法假设调用方已经设置了计数上限，以防止DoS问题。由于该方法在头朝向genesis模式下运行，如果缺少头（“数字”），它将返回一个空切片。
+//因此，调用方必须确保head（'number'）参数实际上是一个现有的头。
+//N、 B：因为输入是一个数字，而不是散列，所以这个方法只在canon头上操作。
+func ReadHeaderRange(db typedb.Reader, number uint64, count uint64) []rlp.RawValue {
+	var rlpHeaders []rlp.RawValue
+	if count == 0 {
+		return rlpHeaders
+	}
+	i := number
+	if count-1 > number {
+		// 可以请求块0，1项
+		count = number + 1
+	}
+	limit, _ := db.Ancients()
+	// 首次读取活动块
+	if i >= limit {
+		// 如果我们需要读取活动块，我们需要首先计算出散列
+		hash := ReadCanonicalHash(db, number)
+		for ; i >= limit && count > 0; i-- {
+			if data, _ := db.Get(headerKey(i, hash)); len(data) > 0 {
+				rlpHeaders = append(rlpHeaders, data)
+				// 获取下一个查询的父哈希
+				hash = block2.HeaderParentHashFromRLP(data)
+			} else {
+				break // 也许是搬到了古人那里
+			}
+			count--
+		}
+	}
+	if count == 0 {
+		return rlpHeaders
+	}
+	// 阅读古人遗书
+	max := count * 700
+	data, err := db.AncientRange(freezerHeaderTable, i+1-count, count, max)
+	if err == nil && uint64(len(data)) == count {
+		// 数据的顺序为[h，h+1，…，n]——需要重新排序
+		for i := range data {
+			rlpHeaders = append(rlpHeaders, data[len(data)-1-i])
+		}
+	}
+	return rlpHeaders
+}
+
+// ReadRawReceipts检索属于块的所有交易凭证。收据元数据字段不能保证填充，因此不应使用它们。如果需要元数据，请使用ReadReceipts。
+func ReadRawReceipts(db typedb.Reader, hash entity.Hash, number uint64) block2.Receipts {
+	// 检索扁平收据切片
+	data := ReadReceiptsRLP(db, hash, number)
+	if len(data) == 0 {
+		return nil
+	}
+	// 将收据从其存储形式转换为其内部表示形式
+	storageReceipts := []*block2.ReceiptForStorage{}
+	if err := rlp.DecodeBytes(data, &storageReceipts); err != nil {
+		log.Error("Invalid receipt array RLP", "hash", hash, "err", err)
+		return nil
+	}
+	receipts := make(block2.Receipts, len(storageReceipts))
+	for i, storageReceipt := range storageReceipts {
+		receipts[i] = (*block2.Receipt)(storageReceipt)
+	}
+	return receipts
 }
 
 // ReadTdRLP检索与RLP编码中的哈希对应的块的总难度。
@@ -227,6 +324,17 @@ func WriteBlock(db typedb.KeyValueWriter, block *block2.Block) {
 	WriteHeader(db, block.Header())
 }
 
+// WriteLastPivotNumber存储最后一个数据透视块的编号。
+func WriteLastPivotNumber(db typedb.KeyValueWriter, pivot uint64) {
+	enc, err := rlp.EncodeToBytes(pivot)
+	if err != nil {
+		log.Crit("Failed to encode pivot block number", "err", err)
+	}
+	if err := db.Put(lastPivotKey, enc); err != nil {
+		log.Crit("Failed to store pivot block number", "err", err)
+	}
+}
+
 // WriteBodyRLP将RLP编码的块体存储到数据库中。
 func WriteBodyRLP(db typedb.KeyValueWriter, hash entity.Hash, number uint64, rlp rlp.RawValue) {
 	if err := db.Put(blockBodyKey(number, hash), rlp); err != nil {
@@ -280,7 +388,7 @@ func WriteReceipts(db typedb.KeyValueWriter, hash entity.Hash, number uint64, re
 	}
 	bytes, err := rlp.EncodeToBytes(storageReceipts)
 	if err != nil {
-		//123log.Info("Failed to encode block receipts", "err", err)
+		log.Info("Failed to encode block receipts", "err", err)
 	}
 	// 存储扁平收据切片
 	if err := db.Put(blockReceiptsKey(number, hash), bytes); err != nil {
@@ -341,13 +449,6 @@ func WriteCode(db typedb.KeyValueWriter, hash entity.Hash, code []byte) {
 //	//preimageCounter.Inc(int64(len(preimages)))
 //	//preimageHitCounter.Inc(int64(len(preimages)))
 //}
-
-// WriteGenesisState将genesis状态写入磁盘。
-func WriteGenesisState(db typedb.KeyValueWriter, hash entity.Hash, data []byte) {
-	if err := db.Put(genesisKey(hash), data); err != nil {
-		log.Info("Failed to store genesis state", "err", err)
-	}
-}
 
 // DeleteReceipts删除与块哈希关联的所有收据数据。
 func DeleteReceipts(db typedb.KeyValueWriter, hash entity.Hash, number uint64) {

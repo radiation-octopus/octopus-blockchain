@@ -2,14 +2,18 @@ package block
 
 import (
 	"encoding/binary"
+	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
+	"reflect"
 	"sync/atomic"
+	"time"
 )
 
 var (
-	EmptyRootHash  = entity.BytesToHash(utils.Hex2Bytes("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"))
+	EmptyRootHash  = entity.HexToHash("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
 	EmptyUncleHash = RlpHash([]*Header(nil))
 )
 
@@ -41,9 +45,9 @@ type Header struct {
 	GasLimit   uint64   `autoInjectCfg:"octopus.blockchain.binding.genesis.header.gasLimit"`   //gas限制
 	GasUsed    uint64   `autoInjectCfg:"octopus.blockchain.binding.genesis.header.gasUsed"`    //gas总和
 	Time       uint64   `autoInjectCfg:"octopus.blockchain.binding.genesis.header.time"`       //时间戳
-	//Extra       []byte
-	MixDigest entity.Hash `autoInjectCfg:"octopus.blockchain.binding.genesis.header.mixDigest"` //mixhash
-	Nonce     BlockNonce  `autoInjectCfg:"octopus.blockchain.binding.genesis.header.nonce"`     //唯一标识s
+	Extra      []byte
+	MixDigest  entity.Hash `autoInjectCfg:"octopus.blockchain.binding.genesis.header.mixDigest"` //mixhash
+	Nonce      BlockNonce  `autoInjectCfg:"octopus.blockchain.binding.genesis.header.nonce"`     //唯一标识s
 
 	//基本费用
 	BaseFee *big.Int `autoInjectCfg:"octopus.blockchain.binding.genesis.header.baseFee"`
@@ -52,7 +56,45 @@ type Header struct {
 func (h *Header) Hash() entity.Hash {
 	//哈希运算
 	return RlpHash(h)
-	//return entity.Hash{}
+}
+
+// 如果此标头/块没有收据，则EmptyReceipts返回true。
+func (h *Header) EmptyReceipts() bool {
+	return h.ReceiptHash == EmptyRootHash
+}
+
+// 如果没有额外的“body”来完成标头，则EmptyBody返回true，即：没有事务和未结项。
+func (h *Header) EmptyBody() bool {
+	return h.TxHash == EmptyRootHash && h.UncleHash == EmptyUncleHash
+}
+
+var headerSize = utils.StorageSize(reflect.TypeOf(Header{}).Size())
+
+// 大小返回所有内部内容使用的近似内存。它用于近似和限制各种缓存的内存消耗。
+func (h *Header) Size() utils.StorageSize {
+	return headerSize + utils.StorageSize(len(h.Extra)+(h.Difficulty.BitLen()+h.Number.BitLen())/8)
+}
+
+// SanityCheck检查了一些基本的东西——这些检查远远超出了任何“正常”生产值应该具备的范围，
+//主要用于防止无界字段塞满垃圾数据，从而增加处理开销
+func (h *Header) SanityCheck() error {
+	if h.Number != nil && !h.Number.IsUint64() {
+		return fmt.Errorf("too large block number: bitlen %d", h.Number.BitLen())
+	}
+	if h.Difficulty != nil {
+		if diffLen := h.Difficulty.BitLen(); diffLen > 80 {
+			return fmt.Errorf("too large block difficulty: bitlen %d", diffLen)
+		}
+	}
+	if eLen := len(h.Extra); eLen > 100*1024 {
+		return fmt.Errorf("too large block extradata: size %d", eLen)
+	}
+	if h.BaseFee != nil {
+		if bfLen := h.BaseFee.BitLen(); bfLen > 256 {
+			return fmt.Errorf("too large base fee: bitlen %d", bfLen)
+		}
+	}
+	return nil
 }
 
 //数据容器
@@ -68,13 +110,18 @@ type Block struct {
 	// caches
 	hash atomic.Value //缓存hash
 	size atomic.Value //缓存大小
-	td   *big.Int     //交易总难度
+
+	// 包eth使用这些字段来跟踪对等块中继。
+	ReceivedAt   time.Time
+	ReceivedFrom interface{}
 }
+
+type Blocks []*Block
 
 // 新块创建新块。复制输入数据，对标题和字段值的更改不会影响块。
 //头中的TxHash、uncleshash、ReceiptHash和Bloom的值将被忽略，并设置为从给定的txs、uncles和receipts派生的值。
 func NewBlock(header *Header, txs []*Transaction, receipts []*Receipt, hasher TrieHasher) *Block {
-	b := &Block{header: CopyHeader(header), td: new(big.Int)}
+	b := &Block{header: CopyHeader(header)}
 	if len(txs) == 0 {
 		b.header.TxHash = EmptyRootHash
 	} else {
@@ -101,6 +148,11 @@ func NewBlock(header *Header, txs []*Transaction, receipts []*Receipt, hasher Tr
 	//}
 
 	return b
+}
+
+//SanityCheck可用于防止无界字段塞满垃圾数据，从而增加处理开销
+func (b *Block) SanityCheck() error {
+	return b.header.SanityCheck()
 }
 
 func (b Block) newGenesis() {
@@ -131,6 +183,17 @@ func (b *Block) BaseFee() *big.Int {
 	return new(big.Int).Set(b.header.BaseFee)
 }
 
+// Size通过编码并返回块，或返回先前缓存的值，返回块的真实RLP编码存储大小。
+func (b *Block) Size() utils.StorageSize {
+	if size := b.size.Load(); size != nil {
+		return size.(utils.StorageSize)
+	}
+	c := writeCounter(0)
+	rlp.Encode(&c, b)
+	b.size.Store(utils.StorageSize(c))
+	return utils.StorageSize(c)
+}
+
 func (b *Block) Header() *Header { return CopyHeader(b.header) }
 
 // Body returns the non-header content of the block.
@@ -144,6 +207,8 @@ func (b *Block) Hash() entity.Hash {
 	b.hash.Store(v)
 	return v
 }
+
+func (b *Block) Uncles() []*Header { return b.uncles }
 
 // WithBody返回具有给定事务和叔叔内容的新块.
 func (b *Block) WithBody(transactions []*Transaction, uncles []*Header) *Block {
@@ -188,7 +253,32 @@ func CopyHeader(h *Header) *Header {
 	return &cpy
 }
 
+func CalcUncleHash(uncles []*Header) entity.Hash {
+	if len(uncles) == 0 {
+		return EmptyUncleHash
+	}
+	return rlpHash(uncles)
+}
+
 // NewBlockWithHeader使用给定的标头数据创建块。复制标头数据，对标头和字段值的更改不会影响块。
 func NewBlockWithHeader(header *Header) *Block {
 	return &Block{header: CopyHeader(header)}
+}
+
+// HeaderParentHashFromRLP返回RLP编码头的parentHash。
+//如果“header”无效，则返回零哈希。
+func HeaderParentHashFromRLP(header []byte) entity.Hash {
+	// parentHash是第一个列表元素。
+	listContent, _, err := rlp.SplitList(header)
+	if err != nil {
+		return entity.Hash{}
+	}
+	parentHash, _, err := rlp.SplitString(listContent)
+	if err != nil {
+		return entity.Hash{}
+	}
+	if len(parentHash) != 32 {
+		return entity.Hash{}
+	}
+	return entity.BytesToHash(parentHash)
 }

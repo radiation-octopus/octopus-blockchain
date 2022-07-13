@@ -285,3 +285,67 @@ func (w EncoderBuffer) List() int {
 func (w EncoderBuffer) ListEnd(index int) {
 	w.buf.listEnd(index)
 }
+
+// encReader是io。编码器读取器返回的读取器。它在EOF时释放其encbuf。
+type encReader struct {
+	buf    *encBuffer // 我们正在读取的缓冲区。当我们在EOF时，这是零。
+	lhpos  int        // 我们正在读取的列表标题索引
+	strpos int        // 字符串缓冲区中的当前位置
+	piece  []byte     // 下一篇要阅读的文章
+}
+
+func (r *encReader) Read(b []byte) (n int, err error) {
+	for {
+		if r.piece = r.next(); r.piece == nil {
+			// 当第一次遇到编码缓冲区时，在EOF时将其放回池中。
+			//后续调用仍然返回EOF作为错误，但缓冲区不再有效。
+			if r.buf != nil {
+				encBufferPool.Put(r.buf)
+				r.buf = nil
+			}
+			return n, io.EOF
+		}
+		nn := copy(b[n:], r.piece)
+		n += nn
+		if nn < len(r.piece) {
+			// 这件衣服不合身，下次见。
+			r.piece = r.piece[nn:]
+			return n, nil
+		}
+		r.piece = nil
+	}
+}
+
+// next返回要读取的下一段数据。它在EOF时返回零。
+func (r *encReader) next() []byte {
+	switch {
+	case r.buf == nil:
+		return nil
+
+	case r.piece != nil:
+		// 仍有数据可供读取。
+		return r.piece
+
+	case r.lhpos < len(r.buf.lheads):
+		// 我们在最后一个列表标题之前。
+		head := r.buf.lheads[r.lhpos]
+		sizebefore := head.offset - r.strpos
+		if sizebefore > 0 {
+			// 标题前的字符串数据。
+			p := r.buf.str[r.strpos:head.offset]
+			r.strpos += sizebefore
+			return p
+		}
+		r.lhpos++
+		return head.encode(r.buf.sizebuf[:])
+
+	case r.strpos < len(r.buf.str):
+		// 在所有列表标题之后的末尾显示字符串数据。
+		p := r.buf.str[r.strpos:]
+		r.strpos = len(r.buf.str)
+		return p
+
+	default:
+		return nil
+	}
+}

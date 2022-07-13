@@ -15,6 +15,14 @@ type freezerdb struct {
 	typedb.AncientStore
 }
 
+func (frdb *freezerdb) Stat(property string) (string, error) {
+	panic("implement me")
+}
+
+func (frdb *freezerdb) Compact(start []byte, limit []byte) error {
+	panic("implement me")
+}
+
 // 关门。Closer，关闭快速键值存储和慢速古代表。
 func (frdb *freezerdb) Close() error {
 	var errs []error

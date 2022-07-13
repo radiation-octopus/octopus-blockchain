@@ -6,6 +6,7 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/event"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"sync"
 )
@@ -135,6 +136,11 @@ func (miner *Miner) Close() {
 	miner.wg.Wait()
 }
 
+// 挂起返回当前挂起的块和关联状态。
+func (miner *Miner) Pending() (*block2.Block, *operationdb.OperationDB) {
+	return miner.worker.pending()
+}
+
 func (miner *Miner) Mining() bool {
 	return miner.worker.isRunning()
 }
@@ -142,4 +148,15 @@ func (miner *Miner) Mining() bool {
 func (miner *Miner) SetEtherbase(addr entity.Address) {
 	miner.coinbase = addr
 	miner.worker.setEtherbase(addr)
+}
+
+// PendingBlock返回当前挂起的块。注意，要同时访问挂起块和挂起状态，
+//请使用pending（），因为挂起状态可以在多个方法调用之间更改
+func (miner *Miner) PendingBlock() *block2.Block {
+	return miner.worker.pendingBlock()
+}
+
+// SubscribePendingLogs开始将挂起事务的日志传递到给定通道。
+func (miner *Miner) SubscribePendingLogs(ch chan<- []*block2.Log) event.Subscription {
+	return miner.worker.pendingLogsFeed.Subscribe(ch)
 }

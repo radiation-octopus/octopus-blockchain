@@ -63,6 +63,16 @@ func encodeForDerive(list DerivableList, i int, buf *bytes.Buffer) []byte {
 	return utils.CopyBytes(buf.Bytes())
 }
 
+// rlpHash对x进行编码，并对编码的字节进行散列。
+func rlpHash(x interface{}) (h entity.Hash) {
+	sha := hasherPool.Get().(crypto.KeccakState)
+	defer hasherPool.Put(sha)
+	sha.Reset()
+	rlp.Encode(sha, x)
+	sha.Read(h[:])
+	return h
+}
+
 // DeriveSha在块头中创建事务和收据的树哈希。
 func DeriveSha(list DerivableList, hasher TrieHasher) entity.Hash {
 	hasher.Reset()

@@ -2,8 +2,8 @@ package vm
 
 import (
 	"errors"
-	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/entity/math"
 )
 
 func makeGasSStoreFunc(clearingRefund uint64) gasFunc {

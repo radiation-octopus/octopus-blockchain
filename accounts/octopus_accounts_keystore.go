@@ -22,6 +22,9 @@ var (
 	ErrNoMatch = errors.New("no key for given address or file")
 
 	ErrDecrypt = errors.New("could not decrypt key with given password")
+
+	// 如果试图导入的帐户已存在于密钥库中，则返回ErrAccountAlreadyExists。
+	ErrAccountAlreadyExists = errors.New("account already exists")
 )
 
 //KeyStoreType是密钥库后端的反射类型。
@@ -85,6 +88,92 @@ func (ks *KeyStore) NewAccount(passphrase string) (Account, error) {
 	ks.cache.add(account)
 	ks.refreshWallets()
 	return account, nil
+}
+
+// ImportECDSA将给定的密钥存储到密钥目录中，并使用密码对其进行加密。
+func (ks *KeyStore) ImportECDSA(priv *ecdsa.PrivateKey, passphrase string) (Account, error) {
+	ks.importMu.Lock()
+	defer ks.importMu.Unlock()
+
+	key := newKeyFromECDSA(priv)
+	if ks.cache.hasAddress(key.Address) {
+		return Account{
+			Address: key.Address,
+		}, ErrAccountAlreadyExists
+	}
+	return ks.importKey(key, passphrase)
+}
+
+// 锁从内存中删除具有给定地址的私钥。
+func (ks *KeyStore) Lock(addr entity.Address) error {
+	ks.mu.Lock()
+	if unl, found := ks.unlocked[addr]; found {
+		ks.mu.Unlock()
+		ks.expire(addr, unl, time.Duration(0)*time.Nanosecond)
+	} else {
+		ks.mu.Unlock()
+	}
+	return nil
+}
+
+// TimedUnlock使用密码短语解锁给定帐户。帐户在超时期间保持解锁。
+//超时0将解锁帐户，直到程序退出。帐户必须与唯一密钥文件匹配。
+//如果帐户地址已解锁一段时间，TimedUnlock会延长或缩短活动解锁超时。
+//如果该地址之前已无限期解锁，则不会更改超时。
+func (ks *KeyStore) TimedUnlock(a Account, passphrase string, timeout time.Duration) error {
+	a, key, err := ks.getDecryptedKey(a, passphrase)
+	if err != nil {
+		return err
+	}
+
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	u, found := ks.unlocked[a.Address]
+	if found {
+		if u.abort == nil {
+			// 地址被无限期解锁，因此用超时来解锁它会让人困惑。
+			zeroKey(key.PrivateKey)
+			return nil
+		}
+		// 终止expire goroutine并在下面替换它。
+		close(u.abort)
+	}
+	if timeout > 0 {
+		u = &unlocked{Key: key, abort: make(chan struct{})}
+		go ks.expire(a.Address, u, timeout)
+	} else {
+		u = &unlocked{Key: key}
+	}
+	ks.unlocked[a.Address] = u
+	return nil
+}
+
+func (ks *KeyStore) expire(addr entity.Address, u *unlocked, timeout time.Duration) {
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case <-u.abort:
+		// 退出就行了
+	case <-t.C:
+		ks.mu.Lock()
+		// 只有当它仍然是发射dropLater时使用的同一个关键实例时，才可以使用dropLater。
+		//我们可以使用指针相等来检查，因为每次解锁密钥时，映射都会存储一个新指针。
+		if ks.unlocked[addr] == u {
+			zeroKey(u.PrivateKey)
+			delete(ks.unlocked, addr)
+		}
+		ks.mu.Unlock()
+	}
+}
+
+func (ks *KeyStore) importKey(key *Key, passphrase string) (Account, error) {
+	a := Account{Address: key.Address, URL: URL{Scheme: KeyStoreScheme, Path: ks.storage.JoinPath(keyFileName(key.Address))}}
+	if err := ks.storage.StoreKey(a.URL.Path, key, passphrase); err != nil {
+		return Account{}, err
+	}
+	ks.cache.add(a)
+	ks.refreshWallets()
+	return a, nil
 }
 
 //refreshWallets检索当前帐户列表，并在此基础上进行任何必要的钱包刷新。
