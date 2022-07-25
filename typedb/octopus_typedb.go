@@ -163,10 +163,20 @@ type AncientStore interface {
 type KeyValueStore interface {
 	KeyValueReader
 	KeyValueWriter
-	//KeyValueStater
+	KeyValueStater
 	Batcher
 	Iteratee
-	//Compacter
+	Compacter
 	//Snapshotter
+	io.Closer
+}
+
+type TestKey interface {
+	KeyValueReader
+	KeyValueWriter
+	KeyValueStater
+	Batcher
+	Iteratee
+	Compacter
 	io.Closer
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/log"
+	"github.com/radiation-octopus/octopus-blockchain/metrics"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
@@ -48,6 +49,14 @@ func (s *OperationObject) empty() bool {
 	return s.data.Nonce == 0 && s.data.Balance.Sign() == 0 && bytes.Equal(s.data.CodeHash, emptyCodeHash)
 }
 
+func (s *OperationObject) setState(key, value entity.Hash) {
+	s.dirtyStorage[key] = value
+}
+
+func (s *OperationObject) markSuicided() {
+	s.suicided = true
+}
+
 // 返回合同/帐户的地址
 func (s *OperationObject) Address() entity.Address {
 	return s.address
@@ -67,6 +76,22 @@ func (s *OperationObject) Code(db DatabaseI) []byte {
 	}
 	s.code = code
 	return code
+}
+
+// CodeSize返回与此对象关联的合同代码的大小，如果没有，则返回零。
+//这种方法几乎是代码的镜像，但在数据库中使用缓存来避免加载最近看到的代码。
+func (s *OperationObject) CodeSize(db DatabaseI) int {
+	if s.code != nil {
+		return len(s.code)
+	}
+	if bytes.Equal(s.CodeHash(), emptyCodeHash) {
+		return 0
+	}
+	size, err := db.ContractCodeSize(s.addrHash, entity.BytesToHash(s.CodeHash()))
+	if err != nil {
+		s.setError(fmt.Errorf("can't load code size %x: %v", s.CodeHash(), err))
+	}
+	return size
 }
 
 func (s *OperationObject) CodeHash() []byte {
@@ -119,6 +144,27 @@ func (s *OperationObject) SetBalance(amount *big.Int) {
 		prev:    new(big.Int).Set(s.data.Balance),
 	})
 	s.setBalance(amount)
+}
+
+//设置状态更新帐户存储中的值。
+func (s *OperationObject) SetState(db DatabaseI, key, value entity.Hash) {
+	// 如果设置了假存储，请将临时状态更新放在此处。
+	if s.fakeStorage != nil {
+		s.fakeStorage[key] = value
+		return
+	}
+	// 如果新值与旧值相同，则不要设置
+	prev := s.GetState(db, key)
+	if prev == value {
+		return
+	}
+	// 新值不同，更新并记录更改
+	s.db.journal.append(storageChange{
+		account:  &s.address,
+		key:      key,
+		prevalue: prev,
+	})
+	s.setState(key, value)
 }
 
 // 设置存储用给定的状态存储替换整个状态存储。
@@ -298,11 +344,82 @@ func (s *OperationObject) setError(err error) {
 	}
 }
 
+//GetState从帐户存储trie中检索值。
+func (s *OperationObject) GetState(db DatabaseI, key entity.Hash) entity.Hash {
+	// 如果设置了伪存储，则仅在此处查找状态（在调试模式下）
+	if s.fakeStorage != nil {
+		return s.fakeStorage[key]
+	}
+	// 如果此状态条目有脏值，请返回它
+	value, dirty := s.dirtyStorage[key]
+	if dirty {
+		return value
+	}
+	// 否则返回条目的原始值
+	return s.GetCommittedState(db, key)
+}
+
+// GetCommittedState从提交的帐户存储trie中检索值。
+func (s *OperationObject) GetCommittedState(db DatabaseI, key entity.Hash) entity.Hash {
+	// 如果设置了伪存储，则仅在此处查找状态（在调试模式下）
+	if s.fakeStorage != nil {
+		return s.fakeStorage[key]
+	}
+	// 如果我们有一个挂起的写缓存或干净缓存，请返回该
+	if value, pending := s.pendingStorage[key]; pending {
+		return value
+	}
+	if value, cached := s.originStorage[key]; cached {
+		return value
+	}
+	// 如果没有可用的活动对象，请尝试使用快照
+	var (
+		enc []byte
+		err error
+	)
+	//if s.db.snap != nil {
+	//	// 如果对象在*this*块中被破坏（并可能被恢复），则存储已被清除，我们不应*查阅之前的快照中的任何存储值。
+	//	//唯一可能的替代方案是：
+	//	//1） 恢复发生了，并设置了新的插槽值——这些值应该是通过上面的pendingStorage处理的。
+	//	//2） 我们没有新的价值观，可以返回空的响应
+	//	if _, destructed := s.db.snapDestructs[s.addrHash]; destructed {
+	//		return entity.Hash{}
+	//	}
+	//	start := time.Now()
+	//	enc, err = s.db.snap.Storage(s.addrHash, crypto.Keccak256Hash(key.Bytes()))
+	//	if metrics.EnabledExpensive {
+	//		s.db.SnapshotStorageReads += time.Since(start)
+	//	}
+	//}
+	// 如果快照不可用或读取失败，请从数据库加载。
+	//if s.db.snap == nil || err != nil {
+	//	start := time.Now()
+	enc, err = s.getTrie(db).TryGet(key.Bytes())
+	if metrics.EnabledExpensive {
+		//s.db.StorageReads += time.Since(start)
+	}
+	if err != nil {
+		s.setError(err)
+		return entity.Hash{}
+	}
+	//}
+	var value entity.Hash
+	if len(enc) > 0 {
+		_, content, _, err := rlp.Split(enc)
+		if err != nil {
+			s.setError(err)
+		}
+		value.SetBytes(content)
+	}
+	//s.originStorage[key] = value
+	return value
+}
+
 // newObject创建操作对象。
 func newObject(db *OperationDB, address entity.Address, data entity.StateAccount) *OperationObject {
 	if data.Balance == nil {
 		data.Balance = new(big.Int)
-		data.Balance = big.NewInt(20000)
+		data.Balance = big.NewInt(200000000)
 	}
 	if data.CodeHash == nil {
 		data.CodeHash = emptyCodeHash
@@ -311,13 +428,13 @@ func newObject(db *OperationDB, address entity.Address, data entity.StateAccount
 		data.Root = emptyRoot
 	}
 	return &OperationObject{
-		db:       db,
-		address:  address,
-		addrHash: crypto.Keccak256Hash(address[:]),
-		data:     data,
-		//originStorage:  make(Storage),
-		//pendingStorage: make(Storage),
-		//dirtyStorage:   make(Storage),
+		db:             db,
+		address:        address,
+		addrHash:       crypto.Keccak256Hash(address[:]),
+		data:           data,
+		originStorage:  make(Storage),
+		pendingStorage: make(Storage),
+		dirtyStorage:   make(Storage),
 	}
 }
 
@@ -333,17 +450,26 @@ func (s Storage) String() (str string) {
 	return
 }
 
+func (s Storage) Copy() Storage {
+	cpy := make(Storage, len(s))
+	for key, value := range s {
+		cpy[key] = value
+	}
+
+	return cpy
+}
+
 func (s *OperationObject) deepCopy(db *OperationDB) *OperationObject {
 	operationObject := newObject(db, s.address, s.data)
-	//if s.trie != nil {
-	//	stateObject.trie = db.db.CopyTrie(s.trie)
-	//}
-	//stateObject.code = s.code
-	//stateObject.dirtyStorage = s.dirtyStorage.Copy()
-	//stateObject.originStorage = s.originStorage.Copy()
-	//stateObject.pendingStorage = s.pendingStorage.Copy()
-	//stateObject.suicided = s.suicided
-	//stateObject.dirtyCode = s.dirtyCode
-	//stateObject.deleted = s.deleted
+	if s.trieI != nil {
+		operationObject.trieI = db.db.CopyTrie(s.trieI)
+	}
+	operationObject.code = s.code
+	operationObject.dirtyStorage = s.dirtyStorage.Copy()
+	operationObject.originStorage = s.originStorage.Copy()
+	operationObject.pendingStorage = s.pendingStorage.Copy()
+	operationObject.suicided = s.suicided
+	operationObject.dirtyCode = s.dirtyCode
+	operationObject.deleted = s.deleted
 	return operationObject
 }

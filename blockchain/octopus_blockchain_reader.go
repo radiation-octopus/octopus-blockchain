@@ -45,7 +45,7 @@ func (bc *BlockChain) GetTd(hash entity.Hash, number uint64) *big.Int {
 func (bc *BlockChain) GetBlock(hash entity.Hash, number uint64) *block2.Block {
 	// 如果块已在缓存中，则短路，否则检索
 	//if block, ok := bc.blockCache.Get(hash); ok {
-	//	return block.(*types.Block)
+	//	return block.(*block2.Block)
 	//}
 	block := rawdb.ReadBlock(bc.db, hash, number)
 	if block == nil {

@@ -579,30 +579,31 @@ func (n *handshakeTestNode) id() enode.ID {
 // hexFile reads the given file and decodes the hex data contained in it.
 // Whitespace and any lines beginning with the # character are ignored.
 func hexFile(file string) []byte {
-	fileContent, err := os.ReadFile(file)
-	if err != nil {
-		panic(err)
-	}
-
-	// Gather hex data, ignore comments.
-	var text []byte
-	for _, line := range bytes.Split(fileContent, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if len(line) > 0 && line[0] == '#' {
-			continue
-		}
-		text = append(text, line...)
-	}
+	//456fileContent, err := os.ReadFile(file)
+	//if err != nil {
+	//	panic(err)
+	//}
+	//
+	//// Gather hex data, ignore comments.
+	//var text []byte
+	//for _, line := range bytes.Split(fileContent, []byte("\n")) {
+	//	line = bytes.TrimSpace(line)
+	//	if len(line) > 0 && line[0] == '#' {
+	//		continue
+	//	}
+	//	text = append(text, line...)
+	//}
 
 	// Parse the hex.
-	if bytes.HasPrefix(text, []byte("0x")) {
-		text = text[2:]
-	}
-	data := make([]byte, hex.DecodedLen(len(text)))
-	if _, err := hex.Decode(data, text); err != nil {
-		panic("invalid hex in " + file)
-	}
-	return data
+	//if bytes.HasPrefix(text, []byte("0x")) {
+	//	text = text[2:]
+	//}
+	//data := make([]byte, hex.DecodedLen(len(text)))
+	//if _, err := hex.Decode(data, text); err != nil {
+	//	panic("invalid hex in " + file)
+	//}
+	//return data
+	return nil
 }
 
 // writeTestVector writes a test vector file with the given commentary and binary data.

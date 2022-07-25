@@ -222,12 +222,12 @@ func (c *Contract) isCode(udest uint64) bool {
 func NewContract(caller ContractRef, object ContractRef, value *big.Int, gas uint64) *Contract {
 	c := &Contract{CallerAddress: caller.Address(), caller: caller, self: object}
 
-	//if parent, ok := caller.(*Contract); ok {
-	//	//
-	//	c.jumpdests = parent.jumpdests
-	//} else {
-	//	c.jumpdests = make(map[blockchain.Hash]bitvec)
-	//}
+	if parent, ok := caller.(*Contract); ok {
+		//重用父上下文中的JUMPDEST分析（如果可用）。
+		c.jumpdests = parent.jumpdests
+	} else {
+		c.jumpdests = make(map[entity.Hash]bitvec)
+	}
 
 	c.Gas = gas
 
@@ -252,11 +252,19 @@ func (c *Contract) SetCallCode(addr *entity.Address, hash entity.Hash, code []by
 	c.CodeAddr = addr
 }
 
-// GetOp returns the n'th element in the contract's byte array
+//GetOp返回协定字节数组中的第n个元素
 func (c *Contract) GetOp(n uint64) OpCode {
 	if n < uint64(len(c.Code)) {
 		return OpCode(c.Code[n])
 	}
 
 	return STOP
+}
+
+//SetCodeOptionalHash可以用于提供代码，但提供哈希是可选的。
+//如果未提供哈希，jumpdest分析将不会保存到父上下文中
+func (c *Contract) SetCodeOptionalHash(addr *entity.Address, codeAndHash *codeAndHash) {
+	c.Code = codeAndHash.code
+	c.CodeHash = codeAndHash.hash
+	c.CodeAddr = addr
 }

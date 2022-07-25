@@ -11,13 +11,11 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/entity/hexutil"
 	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
 	"github.com/radiation-octopus/octopus-blockchain/log"
-	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/p2p"
 	"github.com/radiation-octopus/octopus-blockchain/params"
 	"github.com/radiation-octopus/octopus-blockchain/rpc"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
-	"hash/crc32"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -337,7 +335,7 @@ func (n *Node) AccountManager() *accounts.Manager {
 // openEndpoints启动所有网络和RPC端点。
 func (n *Node) openEndpoints() error {
 	// 启动网络端点
-	n.log.Info("Starting peer-to-peer node", "instance", n.server.Name)
+	//n.log.Info("Starting peer-to-peer node", "instance", n.server.Name)
 	if err := n.server.Start(); err != nil {
 		return convertFileLockError(err)
 	}
@@ -475,15 +473,15 @@ func (n *Node) obtainJWTSecret(cliParam string) ([]byte, error) {
 		fileName = n.ResolvePath(datadirJWTKey)
 	}
 	// 尝试从文件读取
-	if data, err := os.ReadFile(fileName); err == nil {
-		jwtSecret := operationutils.FromHex(strings.TrimSpace(string(data)))
-		if len(jwtSecret) == 32 {
-			log.Info("Loaded JWT secret file", "path", fileName, "crc32", fmt.Sprintf("%#x", crc32.ChecksumIEEE(jwtSecret)))
-			return jwtSecret, nil
-		}
-		log.Error("Invalid JWT secret", "path", fileName, "length", len(jwtSecret))
-		return nil, errors.New("invalid JWT secret")
-	}
+	//456if data, err := os.ReadFile(fileName); err == nil {
+	//	jwtSecret := operationutils.FromHex(strings.TrimSpace(string(data)))
+	//	if len(jwtSecret) == 32 {
+	//		log.Info("Loaded JWT secret file", "path", fileName, "crc32", fmt.Sprintf("%#x", crc32.ChecksumIEEE(jwtSecret)))
+	//		return jwtSecret, nil
+	//	}
+	//	log.Error("Invalid JWT secret", "path", fileName, "length", len(jwtSecret))
+	//	return nil, errors.New("invalid JWT secret")
+	//}
 	//需要生成一个
 	jwtSecret := make([]byte, 32)
 	crand.Read(jwtSecret)
@@ -492,10 +490,10 @@ func (n *Node) obtainJWTSecret(cliParam string) ([]byte, error) {
 		log.Info("Generated ephemeral JWT secret", "secret", hexutil.Encode(jwtSecret))
 		return jwtSecret, nil
 	}
-	if err := os.WriteFile(fileName, []byte(hexutil.Encode(jwtSecret)), 0600); err != nil {
-		return nil, err
-	}
-	log.Info("Generated JWT secret", "path", fileName)
+	//if err := os.WriteFile(fileName, []byte(hexutil.Encode(jwtSecret)), 0600); err != nil {
+	//	return nil, err
+	//}
+	//log.Info("Generated JWT secret", "path", fileName)
 	return jwtSecret, nil
 }
 

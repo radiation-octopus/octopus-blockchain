@@ -19,18 +19,18 @@ func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 			current = ovm.Operationdb.GetState(contract.Address(), slot)
 			cost    = uint64(0)
 		)
-		// Check slot presence in the access list
-		if addrPresent, slotPresent := ovm.Operationdb.SlotInAccessList(contract.Address(), slot); !slotPresent {
-			cost = entity.ColdSloadCostEIP2929
-			// If the caller cannot afford the cost, this change will be rolled back
-			ovm.Operationdb.AddSlotToAccessList(contract.Address(), slot)
-			if !addrPresent {
-				// Once we're done with YOLOv2 and schedule this for mainnet, might
-				// be good to remove this panic here, which is just really a
-				// canary to have during testing
-				panic("impossible case: address was not present in access list during sstore op")
-			}
-		}
+		//123Check slot presence in the access list
+		//if addrPresent, slotPresent := ovm.Operationdb.SlotInAccessList(contract.Address(), slot); !slotPresent {
+		//	cost = entity.ColdSloadCostEIP2929
+		//	// If the caller cannot afford the cost, this change will be rolled back
+		//	ovm.Operationdb.AddSlotToAccessList(contract.Address(), slot)
+		//	if !addrPresent {
+		//		// Once we're done with YOLOv2 and schedule this for mainnet, might
+		//		// be good to remove this panic here, which is just really a
+		//		// canary to have during testing
+		//		panic("impossible case: address was not present in access list during sstore op")
+		//	}
+		//}
 		value := entity.Hash(y.Bytes32())
 
 		if current == value { // noop (1)

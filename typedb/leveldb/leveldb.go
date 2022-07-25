@@ -3,7 +3,6 @@ package leveldb
 import (
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/log"
-	"github.com/radiation-octopus/octopus-blockchain/metrics"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
 	"github.com/radiation-octopus/octopus/utils"
 	"github.com/syndtr/goleveldb/leveldb"
@@ -36,23 +35,31 @@ type Database struct {
 	fn string      // 用于报告的文件名
 	db *leveldb.DB // LevelDB实例
 
-	compTimeMeter      metrics.Meter // 用于测量数据库压缩总时间的仪表
-	compReadMeter      metrics.Meter // 用于测量压实过程中读取的数据的仪表
-	compWriteMeter     metrics.Meter // 用于测量压实过程中写入的数据的仪表
-	writeDelayNMeter   metrics.Meter // 用于测量数据库压缩导致的写入延迟数的仪表
-	writeDelayMeter    metrics.Meter // 用于测量数据库压缩导致的写入延迟持续时间的仪表
-	diskSizeGauge      metrics.Gauge // 用于跟踪数据库中所有级别大小的仪表
-	diskReadMeter      metrics.Meter // 测量有效读取数据量的仪表
-	diskWriteMeter     metrics.Meter // 测量写入数据有效量的仪表
-	memCompGauge       metrics.Gauge // 用于跟踪内存压缩次数的仪表
-	level0CompGauge    metrics.Gauge // 用于跟踪0级工作台压实次数的量规
-	nonlevel0CompGauge metrics.Gauge // 用于跟踪非0级工作台压实次数的量规
-	seekCompGauge      metrics.Gauge // 用于跟踪由read opt导致的表格压缩次数的仪表
+	//compTimeMeter      metrics.Meter // 用于测量数据库压缩总时间的仪表
+	//compReadMeter      metrics.Meter // 用于测量压实过程中读取的数据的仪表
+	//compWriteMeter     metrics.Meter // 用于测量压实过程中写入的数据的仪表
+	//writeDelayNMeter   metrics.Meter // 用于测量数据库压缩导致的写入延迟数的仪表
+	//writeDelayMeter    metrics.Meter // 用于测量数据库压缩导致的写入延迟持续时间的仪表
+	//diskSizeGauge      metrics.Gauge // 用于跟踪数据库中所有级别大小的仪表
+	//diskReadMeter      metrics.Meter // 测量有效读取数据量的仪表
+	//diskWriteMeter     metrics.Meter // 测量写入数据有效量的仪表
+	//memCompGauge       metrics.Gauge // 用于跟踪内存压缩次数的仪表
+	//level0CompGauge    metrics.Gauge // 用于跟踪0级工作台压实次数的量规
+	//nonlevel0CompGauge metrics.Gauge // 用于跟踪非0级工作台压实次数的量规
+	//seekCompGauge      metrics.Gauge // 用于跟踪由read opt导致的表格压缩次数的仪表
 
 	quitLock sync.Mutex      // 互斥保护退出通道访问
 	quitChan chan chan error // 在关闭数据库之前退出通道以停止度量集合
 
-	log log.Logger // 跟踪数据库路径的配置记录器
+	//log log.Logger // 跟踪数据库路径的配置记录器
+}
+
+func (db *Database) Compact(start []byte, limit []byte) error {
+	panic("implement me")
+}
+
+func (db *Database) Stat(property string) (string, error) {
+	panic("implement me")
 }
 
 //New返回一个包装的LevelDB对象。命名空间是度量报告用于呈现内部统计信息的前缀。
@@ -80,13 +87,13 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 //自定义函数允许调用者修改leveldb选项
 func NewCustom(file string, namespace string, customize func(options *opt.Options)) (*Database, error) {
 	options := configureOptions(customize)
-	logger := log.New("database", file)
+	//logger := log.New("database", file)
 	usedCache := options.GetBlockCacheCapacity() + options.GetWriteBuffer()*2
 	logCtx := []interface{}{"cache", utils.StorageSize(usedCache), "handles", options.GetOpenFilesCacheCapacity()}
 	if options.ReadOnly {
 		logCtx = append(logCtx, "readonly", "true")
 	}
-	logger.Info("Allocated cache and file handles", logCtx...)
+	//logger.Info("Allocated cache and file handles", logCtx...)
 
 	// 打开数据库并恢复任何潜在的损坏
 	db, err := leveldb.OpenFile(file, options)
@@ -100,24 +107,24 @@ func NewCustom(file string, namespace string, customize func(options *opt.Option
 	ldb := &Database{
 		fn: file,
 		db: db,
-		//log:      logger,
+		//log: logger,
 		quitChan: make(chan chan error),
 	}
-	ldb.compTimeMeter = metrics.NewRegisteredMeter(namespace+"compact/time", nil)
-	ldb.compReadMeter = metrics.NewRegisteredMeter(namespace+"compact/input", nil)
-	ldb.compWriteMeter = metrics.NewRegisteredMeter(namespace+"compact/output", nil)
-	ldb.diskSizeGauge = metrics.NewRegisteredGauge(namespace+"disk/size", nil)
-	ldb.diskReadMeter = metrics.NewRegisteredMeter(namespace+"disk/read", nil)
-	ldb.diskWriteMeter = metrics.NewRegisteredMeter(namespace+"disk/write", nil)
-	ldb.writeDelayMeter = metrics.NewRegisteredMeter(namespace+"compact/writedelay/duration", nil)
-	ldb.writeDelayNMeter = metrics.NewRegisteredMeter(namespace+"compact/writedelay/counter", nil)
-	ldb.memCompGauge = metrics.NewRegisteredGauge(namespace+"compact/memory", nil)
-	ldb.level0CompGauge = metrics.NewRegisteredGauge(namespace+"compact/level0", nil)
-	ldb.nonlevel0CompGauge = metrics.NewRegisteredGauge(namespace+"compact/nonlevel0", nil)
-	ldb.seekCompGauge = metrics.NewRegisteredGauge(namespace+"compact/seek", nil)
+	//ldb.compTimeMeter = metrics.NewRegisteredMeter(namespace+"compact/time", nil)
+	//ldb.compReadMeter = metrics.NewRegisteredMeter(namespace+"compact/input", nil)
+	//ldb.compWriteMeter = metrics.NewRegisteredMeter(namespace+"compact/output", nil)
+	//ldb.diskSizeGauge = metrics.NewRegisteredGauge(namespace+"disk/size", nil)
+	//ldb.diskReadMeter = metrics.NewRegisteredMeter(namespace+"disk/read", nil)
+	//ldb.diskWriteMeter = metrics.NewRegisteredMeter(namespace+"disk/write", nil)
+	//ldb.writeDelayMeter = metrics.NewRegisteredMeter(namespace+"compact/writedelay/duration", nil)
+	//ldb.writeDelayNMeter = metrics.NewRegisteredMeter(namespace+"compact/writedelay/counter", nil)
+	//ldb.memCompGauge = metrics.NewRegisteredGauge(namespace+"compact/memory", nil)
+	//ldb.level0CompGauge = metrics.NewRegisteredGauge(namespace+"compact/level0", nil)
+	//ldb.nonlevel0CompGauge = metrics.NewRegisteredGauge(namespace+"compact/nonlevel0", nil)
+	//ldb.seekCompGauge = metrics.NewRegisteredGauge(namespace+"compact/seek", nil)
 
 	//启动指标收集并返回
-	go ldb.meter(metricsGatheringInterval)
+	//go ldb.meter(metricsGatheringInterval)
 	return ldb, nil
 }
 
@@ -240,7 +247,7 @@ func (db *Database) meter(refresh time.Duration) {
 		// Retrieve the database stats
 		stats, err := db.db.GetProperty("leveldb.stats")
 		if err != nil {
-			db.log.Error("Failed to read database stats", "err", err)
+			//db.log.Error("Failed to read database stats", "err", err)
 			merr = err
 			continue
 		}
@@ -250,7 +257,7 @@ func (db *Database) meter(refresh time.Duration) {
 			lines = lines[1:]
 		}
 		if len(lines) <= 3 {
-			db.log.Error("Compaction leveldbTable not found")
+			//db.log.Error("Compaction leveldbTable not found")
 			merr = errors.New("compaction leveldbTable not found")
 			continue
 		}
@@ -268,7 +275,7 @@ func (db *Database) meter(refresh time.Duration) {
 			for idx, counter := range parts[2:] {
 				value, err := strconv.ParseFloat(strings.TrimSpace(counter), 64)
 				if err != nil {
-					db.log.Error("Compaction entry parsing failed", "err", err)
+					//db.log.Error("Compaction entry parsing failed", "err", err)
 					merr = err
 					continue
 				}
@@ -276,22 +283,22 @@ func (db *Database) meter(refresh time.Duration) {
 			}
 		}
 		// Update all the requested meters
-		if db.diskSizeGauge != nil {
-			db.diskSizeGauge.Update(int64(compactions[i%2][0] * 1024 * 1024))
-		}
-		if db.compTimeMeter != nil {
-			db.compTimeMeter.Mark(int64((compactions[i%2][1] - compactions[(i-1)%2][1]) * 1000 * 1000 * 1000))
-		}
-		if db.compReadMeter != nil {
-			db.compReadMeter.Mark(int64((compactions[i%2][2] - compactions[(i-1)%2][2]) * 1024 * 1024))
-		}
-		if db.compWriteMeter != nil {
-			db.compWriteMeter.Mark(int64((compactions[i%2][3] - compactions[(i-1)%2][3]) * 1024 * 1024))
-		}
+		//if db.diskSizeGauge != nil {
+		//	db.diskSizeGauge.Update(int64(compactions[i%2][0] * 1024 * 1024))
+		//}
+		//if db.compTimeMeter != nil {
+		//	db.compTimeMeter.Mark(int64((compactions[i%2][1] - compactions[(i-1)%2][1]) * 1000 * 1000 * 1000))
+		//}
+		//if db.compReadMeter != nil {
+		//	db.compReadMeter.Mark(int64((compactions[i%2][2] - compactions[(i-1)%2][2]) * 1024 * 1024))
+		//}
+		//if db.compWriteMeter != nil {
+		//	db.compWriteMeter.Mark(int64((compactions[i%2][3] - compactions[(i-1)%2][3]) * 1024 * 1024))
+		//}
 		// Retrieve the write delay statistic
 		writedelay, err := db.db.GetProperty("leveldb.writedelay")
 		if err != nil {
-			db.log.Error("Failed to read database write delay statistic", "err", err)
+			//db.log.Error("Failed to read database write delay statistic", "err", err)
 			merr = err
 			continue
 		}
@@ -302,27 +309,27 @@ func (db *Database) meter(refresh time.Duration) {
 			paused        bool
 		)
 		if n, err := fmt.Sscanf(writedelay, "DelayN:%d Delay:%s Paused:%t", &delayN, &delayDuration, &paused); n != 3 || err != nil {
-			db.log.Error("Write delay statistic not found")
+			//db.log.Error("Write delay statistic not found")
 			merr = err
 			continue
 		}
 		duration, err = time.ParseDuration(delayDuration)
 		if err != nil {
-			db.log.Error("Failed to parse delay duration", "err", err)
+			//db.log.Error("Failed to parse delay duration", "err", err)
 			merr = err
 			continue
 		}
-		if db.writeDelayNMeter != nil {
-			db.writeDelayNMeter.Mark(delayN - delaystats[0])
-		}
-		if db.writeDelayMeter != nil {
-			db.writeDelayMeter.Mark(duration.Nanoseconds() - delaystats[1])
-		}
+		//if db.writeDelayNMeter != nil {
+		//	db.writeDelayNMeter.Mark(delayN - delaystats[0])
+		//}
+		//if db.writeDelayMeter != nil {
+		//	db.writeDelayMeter.Mark(duration.Nanoseconds() - delaystats[1])
+		//}
 		// If a warning that db is performing compaction has been displayed, any subsequent
 		// warnings will be withheld for one minute not to overwhelm the user.
 		if paused && delayN-delaystats[0] == 0 && duration.Nanoseconds()-delaystats[1] == 0 &&
 			time.Now().After(lastWritePaused.Add(degradationWarnInterval)) {
-			db.log.Warn("Database compacting, degraded performance")
+			//db.log.Warn("Database compacting, degraded performance")
 			lastWritePaused = time.Now()
 		}
 		delaystats[0], delaystats[1] = delayN, duration.Nanoseconds()
@@ -330,38 +337,38 @@ func (db *Database) meter(refresh time.Duration) {
 		// Retrieve the database iostats.
 		ioStats, err := db.db.GetProperty("leveldb.iostats")
 		if err != nil {
-			db.log.Error("Failed to read database iostats", "err", err)
+			//db.log.Error("Failed to read database iostats", "err", err)
 			merr = err
 			continue
 		}
 		var nRead, nWrite float64
 		parts := strings.Split(ioStats, " ")
 		if len(parts) < 2 {
-			db.log.Error("Bad syntax of ioStats", "ioStats", ioStats)
+			//db.log.Error("Bad syntax of ioStats", "ioStats", ioStats)
 			merr = fmt.Errorf("bad syntax of ioStats %s", ioStats)
 			continue
 		}
 		if n, err := fmt.Sscanf(parts[0], "Read(MB):%f", &nRead); n != 1 || err != nil {
-			db.log.Error("Bad syntax of read entry", "entry", parts[0])
+			//db.log.Error("Bad syntax of read entry", "entry", parts[0])
 			merr = err
 			continue
 		}
 		if n, err := fmt.Sscanf(parts[1], "Write(MB):%f", &nWrite); n != 1 || err != nil {
-			db.log.Error("Bad syntax of write entry", "entry", parts[1])
+			//db.log.Error("Bad syntax of write entry", "entry", parts[1])
 			merr = err
 			continue
 		}
-		if db.diskReadMeter != nil {
-			db.diskReadMeter.Mark(int64((nRead - iostats[0]) * 1024 * 1024))
-		}
-		if db.diskWriteMeter != nil {
-			db.diskWriteMeter.Mark(int64((nWrite - iostats[1]) * 1024 * 1024))
-		}
+		//if db.diskReadMeter != nil {
+		//	db.diskReadMeter.Mark(int64((nRead - iostats[0]) * 1024 * 1024))
+		//}
+		//if db.diskWriteMeter != nil {
+		//	db.diskWriteMeter.Mark(int64((nWrite - iostats[1]) * 1024 * 1024))
+		//}
 		iostats[0], iostats[1] = nRead, nWrite
 
 		compCount, err := db.db.GetProperty("leveldb.compcount")
 		if err != nil {
-			db.log.Error("Failed to read database iostats", "err", err)
+			//db.log.Error("Failed to read database iostats", "err", err)
 			merr = err
 			continue
 		}
@@ -373,14 +380,14 @@ func (db *Database) meter(refresh time.Duration) {
 			seekComp      uint32
 		)
 		if n, err := fmt.Sscanf(compCount, "MemComp:%d Level0Comp:%d NonLevel0Comp:%d SeekComp:%d", &memComp, &level0Comp, &nonLevel0Comp, &seekComp); n != 4 || err != nil {
-			db.log.Error("Compaction count statistic not found")
+			//db.log.Error("Compaction count statistic not found")
 			merr = err
 			continue
 		}
-		db.memCompGauge.Update(int64(memComp))
-		db.level0CompGauge.Update(int64(level0Comp))
-		db.nonlevel0CompGauge.Update(int64(nonLevel0Comp))
-		db.seekCompGauge.Update(int64(seekComp))
+		//db.memCompGauge.Update(int64(memComp))
+		//db.level0CompGauge.Update(int64(level0Comp))
+		//db.nonlevel0CompGauge.Update(int64(nonLevel0Comp))
+		//db.seekCompGauge.Update(int64(seekComp))
 
 		// Sleep a bit, then repeat the stats collection
 		select {
@@ -406,37 +413,37 @@ type batch struct {
 }
 
 //Put将给定值插入批中，以便稍后提交。
-func (b batch) Put(key []byte, value []byte) error {
+func (b *batch) Put(key []byte, value []byte) error {
 	b.b.Put(key, value)
 	b.size += len(key) + len(value)
 	return nil
 }
 
 //Delete将删除密钥插入批处理中，以便稍后提交。
-func (b batch) Delete(key []byte) error {
+func (b *batch) Delete(key []byte) error {
 	b.b.Delete(key)
 	b.size += len(key)
 	return nil
 }
 
 //ValueSize检索排队等待写入的数据量。
-func (b batch) ValueSize() int {
+func (b *batch) ValueSize() int {
 	return b.size
 }
 
 //写入将所有累积数据刷新到磁盘。
-func (b batch) Write() error {
+func (b *batch) Write() error {
 	return b.db.Write(b.b, nil)
 }
 
 //重置重置批以供重用。
-func (b batch) Reset() {
+func (b *batch) Reset() {
 	b.b.Reset()
 	b.size = 0
 }
 
 //Replay重播批处理内容。
-func (b batch) Replay(w typedb.KeyValueWriter) error {
+func (b *batch) Replay(w typedb.KeyValueWriter) error {
 	return b.b.Replay(&replayer{writer: w})
 }
 

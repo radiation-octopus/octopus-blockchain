@@ -604,11 +604,19 @@ func (s *SecureTrie) TryUpdateAccount(key []byte, account *entity.StateAccount) 
 }
 
 func (s *SecureTrie) TryUpdate(key, value []byte) error {
-	panic("implement me")
+	hk := s.hashKey(key)
+	err := s.trie.TryUpdate(hk, value)
+	if err != nil {
+		return err
+	}
+	s.getSecKeyCache()[string(hk)] = utils.CopyBytes(key)
+	return nil
 }
 
 func (s *SecureTrie) TryDelete(key []byte) error {
-	panic("implement me")
+	hk := s.hashKey(key)
+	delete(s.getSecKeyCache(), string(hk))
+	return s.trie.TryDelete(hk)
 }
 
 func (s *SecureTrie) Hash() entity.Hash {

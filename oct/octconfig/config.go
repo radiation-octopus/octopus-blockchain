@@ -2,7 +2,10 @@ package octconfig
 
 import (
 	"github.com/radiation-octopus/octopus-blockchain/blockchain/blockchainconfig"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/entity/genesis"
+	"github.com/radiation-octopus/octopus-blockchain/oct/downloader"
+	"github.com/radiation-octopus/octopus-blockchain/params"
 )
 
 type Config struct {
@@ -12,7 +15,7 @@ type Config struct {
 
 	NetworkId uint64 // 用于选择要连接到的对等方的网络ID
 
-	//SyncMode  downloader.SyncMode
+	SyncMode downloader.SyncMode
 
 	//将为要连接的节点查询这些URL。
 	EthDiscoveryURLs  []string
@@ -25,8 +28,16 @@ type Config struct {
 	//事务池选项
 	TxPool blockchainconfig.TxPoolConfig
 
+	// 支持在虚拟机中跟踪SHA3前映像
+	EnablePreimageRecording bool
+
 	Miner blockchainconfig.Config
 
 	// RPCTxFeeCap是发送交易变体的全局交易费（价格*gaslimit）上限。单位为oct。
 	RPCTxFeeCap float64
+
+	// 检查点是一个硬编码的检查点，可以为零。
+	Checkpoint *params.TrustedCheckpoint `toml:",omitempty"`
+
+	RequiredBlocks map[uint64]entity.Hash `toml:"-"`
 }

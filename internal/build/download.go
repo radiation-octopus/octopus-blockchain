@@ -22,7 +22,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -36,11 +35,12 @@ type ChecksumDB struct {
 
 // MustLoadChecksums loads a file containing checksums.
 func MustLoadChecksums(file string) *ChecksumDB {
-	content, err := os.ReadFile(file)
-	if err != nil {
-		log.Fatal("can't load checksum file: " + err.Error())
-	}
-	return &ChecksumDB{strings.Split(string(content), "\n")}
+	//456content, err := os.ReadFile(file)
+	//if err != nil {
+	//	log.Fatal("can't load checksum file: " + err.Error())
+	//}
+	//return &ChecksumDB{strings.Split(string(content), "\n")}
+	return nil
 }
 
 // Verify checks whether the given file is valid according to the checksum database.

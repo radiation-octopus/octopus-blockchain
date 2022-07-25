@@ -7,6 +7,7 @@ import (
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
 	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb/trie"
@@ -99,7 +100,7 @@ type OperationDB struct {
 
 	thash   entity.Hash
 	txIndex int
-	logs    map[entity.Hash][]*log.Logger //日志
+	logs    map[entity.Hash][]*block.Log //日志
 	logSize uint
 
 	preimages map[entity.Hash][]byte
@@ -161,7 +162,6 @@ func (o *OperationDB) SubBalance(address entity.Address, amount *big.Int) {
 //headerTDMark将金额添加到与addr关联的帐户。
 func (o *OperationDB) AddBalance(address entity.Address, amount *big.Int) {
 	operationObject := o.GetOrNewOperationObject(address)
-	//fmt.Println("add", operationObject.Address().String())
 	if operationObject != nil {
 		operationObject.AddBalance(amount)
 	}
@@ -262,63 +262,117 @@ func (o *OperationDB) SetStorage(addr entity.Address, storage map[entity.Hash]en
 }
 
 func (o *OperationDB) GetCodeSize(address entity.Address) int {
-	panic("implement me")
+	stateObject := o.getOperationObject(address)
+	if stateObject != nil {
+		return stateObject.CodeSize(o.db)
+	}
+	return 0
 }
 
-func (o *OperationDB) AddRefund(u uint64) {
-	panic("implement me")
+//添加退款向退款柜台添加气体
+func (o *OperationDB) AddRefund(gas uint64) {
+	o.journal.append(refundChange{prev: o.refund})
+	o.refund += gas
 }
 
-func (o *OperationDB) SubRefund(u uint64) {
-	panic("implement me")
+//SubRefund将汽油从退款柜台中取出。如果退款计数器低于零，此方法将死机
+func (o *OperationDB) SubRefund(gas uint64) {
+	o.journal.append(refundChange{prev: o.refund})
+	if gas > o.refund {
+		panic(fmt.Sprintf("Refund counter below zero (gas: %d > refund: %d)", gas, o.refund))
+	}
+	o.refund -= gas
 }
 
+//GetReturn返回退款计数器的当前值。
 func (o *OperationDB) GetRefund() uint64 {
-	panic("implement me")
+	return o.refund
 }
 
+//GetCommittedState从给定帐户的提交存储trie中检索值。
 func (o *OperationDB) GetCommittedState(address entity.Address, hash entity.Hash) entity.Hash {
-	panic("implement me")
+	stateObject := o.getOperationObject(address)
+	if stateObject != nil {
+		return stateObject.GetCommittedState(o.db, hash)
+	}
+	return entity.Hash{}
 }
 
 func (o *OperationDB) GetState(address entity.Address, hash entity.Hash) entity.Hash {
-	panic("implement me")
+	stateObject := o.getOperationObject(address)
+	if stateObject != nil {
+		return stateObject.GetState(o.db, hash)
+	}
+	return entity.Hash{}
 }
 
-func (o *OperationDB) SetState(address entity.Address, hash entity.Hash, hash2 entity.Hash) {
-	panic("implement me")
+func (o *OperationDB) SetState(address entity.Address, key entity.Hash, hash entity.Hash) {
+	stateObject := o.GetOrNewOperationObject(address)
+	if stateObject != nil {
+		stateObject.SetState(o.db, key, hash)
+	}
 }
 
 func (o *OperationDB) Suicide(address entity.Address) bool {
-	panic("implement me")
+	stateObject := o.getOperationObject(address)
+	if stateObject == nil {
+		return false
+	}
+	o.journal.append(suicideChange{
+		account:     &address,
+		prev:        stateObject.suicided,
+		prevbalance: new(big.Int).Set(stateObject.Balance()),
+	})
+	stateObject.markSuicided()
+	stateObject.data.Balance = new(big.Int)
+
+	return true
 }
 
 func (o *OperationDB) HasSuicided(address entity.Address) bool {
-	panic("implement me")
+	stateObject := o.getOperationObject(address)
+	if stateObject != nil {
+		return stateObject.suicided
+	}
+	return false
 }
 
 func (o *OperationDB) Exist(address entity.Address) bool {
-	panic("implement me")
+	return o.getOperationObject(address) != nil
 }
 
 func (o *OperationDB) Empty(address entity.Address) bool {
-	panic("implement me")
+	so := o.getOperationObject(address)
+	return so == nil || so.empty()
 }
 
 func (o *OperationDB) AddressInAccessList(addr entity.Address) bool {
-	panic("implement me")
+	return o.accessList.ContainsAddress(addr)
 }
 
 func (o *OperationDB) SlotInAccessList(addr entity.Address, slot entity.Hash) (addressOk bool, slotOk bool) {
-	panic("implement me")
+	return o.accessList.Contains(addr, slot)
 }
 
 func (o *OperationDB) AddAddressToAccessList(addr entity.Address) {
-	panic("implement me")
+	if o.accessList.AddAddress(addr) {
+		o.journal.append(accessListAddAccountChange{&addr})
+	}
 }
 
 func (o *OperationDB) AddSlotToAccessList(addr entity.Address, slot entity.Hash) {
-	panic("implement me")
+	addrMod, slotMod := o.accessList.AddSlot(addr, slot)
+	if addrMod {
+		// 实际上，这是不应该发生的，因为如果不将“地址”添加到访问列表中（通过调用变量、创建等），就无法进入“地址”的范围。
+		//不过，安全总比后悔好
+		o.journal.append(accessListAddAccountChange{&addr})
+	}
+	if slotMod {
+		o.journal.append(accessListAddSlotChange{
+			address: &addr,
+			slot:    &slot,
+		})
+	}
 }
 
 func (o *OperationDB) RevertToSnapshot(i int) {
@@ -333,8 +387,14 @@ func (o *OperationDB) Snapshot() int {
 	panic("implement me")
 }
 
-func (o *OperationDB) AddLog(octopusLog *log.Logger) {
-	panic("implement me")
+func (o *OperationDB) AddLog(log *block.Log) {
+	o.journal.append(addLogChange{txhash: o.thash})
+
+	log.TxHash = o.thash
+	log.TxIndex = uint(o.txIndex)
+	log.Index = o.logSize
+	o.logs[o.thash] = append(o.logs[o.thash], log)
+	o.logSize++
 }
 
 func (o *OperationDB) AddPreimage(hash entity.Hash, bytes []byte) {
@@ -399,7 +459,7 @@ func (o *OperationDB) IntermediateRoot(deleteEmptyObjects bool) entity.Hash {
 
 // StorageTrie返回帐户的存储trie。返回值为副本，对于不存在的帐户，返回值为零。
 func (o *OperationDB) StorageTrie(addr entity.Address) TrieI {
-	stateObject := o.getStateObject(addr)
+	stateObject := o.getOperationObject(addr)
 	if stateObject == nil {
 		return nil
 	}
@@ -588,73 +648,6 @@ func (o *OperationDB) getDeletedOperationObject(addr entity.Address) *OperationO
 	return obj
 }
 
-// getStateObject检索地址给定的状态对象，如果在此执行上下文中找不到或删除了该对象，则返回nil。如果需要区分不存在/刚刚删除，请使用getDeletedStateObject。
-func (o *OperationDB) getStateObject(addr entity.Address) *OperationObject {
-	if obj := o.getDeletedStateObject(addr); obj != nil && !obj.deleted {
-		return obj
-	}
-	return nil
-}
-
-// getDeletedStateObject类似于getStateObject，但它不会为已删除的状态对象返回nil，而是返回设置了deleted标志的实际对象。
-//状态日志需要这样才能恢复到正确的s-destructed对象，而不是擦除关于状态对象的所有知识。
-func (o *OperationDB) getDeletedStateObject(addr entity.Address) *OperationObject {
-	// 首选活动对象（如果有）
-	if obj := o.OperationObjects[addr]; obj != nil {
-		return obj
-	}
-	// 如果没有可用的活动对象，请尝试使用快照
-	var data *entity.StateAccount
-	//if s.snap != nil {
-	//	start := time.Now()
-	//	acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.Bytes()))
-	//	if metrics.EnabledExpensive {
-	//		s.SnapshotAccountReads += time.Since(start)
-	//	}
-	//	if err == nil {
-	//		if acc == nil {
-	//			return nil
-	//		}
-	//		data = &types.StateAccount{
-	//			Nonce:    acc.Nonce,
-	//			Balance:  acc.Balance,
-	//			CodeHash: acc.CodeHash,
-	//			Root:     common.BytesToHash(acc.Root),
-	//		}
-	//		if len(data.CodeHash) == 0 {
-	//			data.CodeHash = emptyCodeHash
-	//		}
-	//		if data.Root == (common.Hash{}) {
-	//			data.Root = emptyRoot
-	//		}
-	//	}
-	//}
-	// 如果快照不可用或读取失败，请从数据库加载
-	if data == nil {
-		//start := time.Now()
-		enc, err := o.trieI.TryGet(addr.Bytes())
-		//if metrics.EnabledExpensive {
-		//	o.AccountReads += time.Since(start)
-		//}
-		if err != nil {
-			o.setError(fmt.Errorf("getDeleteStateObject (%x) error: %v", addr.Bytes(), err))
-			return nil
-		}
-		if len(enc) == 0 {
-			return nil
-		}
-		data = new(entity.StateAccount)
-		if err := rlp.DecodeBytes(enc, data); err != nil {
-			log.Error("Failed to decode state object", "addr", addr, "err", err)
-			return nil
-		}
-	}
-	// 插入到活动集中
-	obj := newObject(o, addr, *data)
-	o.setOperationObject(obj)
-	return obj
-}
-
 func (o *OperationDB) setOperationObject(object *OperationObject) {
 	o.OperationObjects[object.Address()] = object
 }
@@ -670,11 +663,14 @@ func (o *OperationDB) Commit(deleteEmptyObjects bool) (entity.Hash, error) {
 	// 将对象提交到trie，测量运行时间
 	var storageCommitted int
 	codeWriter := o.db.TrieDB().DiskDB().NewBatch()
+	read := o.db.TrieDB().DiskDB()
 	for addr := range o.OperationObjectsDirty {
 		if obj := o.OperationObjects[addr]; !obj.deleted {
 			// 编写与状态对象关联的任何合同代码
 			if obj.code != nil && obj.dirtyCode {
 				rawdb.WriteCode(codeWriter, entity.BytesToHash(obj.CodeHash()), obj.code)
+				re := rawdb.ReadCodeWithPrefix(read, entity.BytesToHash(obj.CodeHash()))
+				fmt.Println("re:", re)
 				obj.dirtyCode = false
 			}
 			// 将状态对象中的任何存储更改写入其存储trie
@@ -808,7 +804,7 @@ func NewOperationDb(root entity.Hash, db DatabaseI) (*OperationDB, error) {
 		OperationObjects:        make(map[entity.Address]*OperationObject),
 		OperationObjectsPending: make(map[entity.Address]struct{}),
 		OperationObjectsDirty:   make(map[entity.Address]struct{}),
-		logs:                    make(map[entity.Hash][]*log.Logger),
+		logs:                    make(map[entity.Hash][]*block.Log),
 		preimages:               make(map[entity.Hash][]byte),
 		journal:                 NewJournal(),
 		accessList:              newAccessList(),
@@ -826,7 +822,7 @@ func (s *OperationDB) Copy() *OperationDB {
 		OperationObjectsPending: make(map[entity.Address]struct{}, len(s.OperationObjectsPending)),
 		OperationObjectsDirty:   make(map[entity.Address]struct{}, len(s.journal.Dirties)),
 		//refund:              s.refund,
-		logs:      make(map[entity.Hash][]*log.Logger, len(s.logs)),
+		logs:      make(map[entity.Hash][]*block.Log, len(s.logs)),
 		logSize:   s.logSize,
 		preimages: make(map[entity.Hash][]byte, len(s.preimages)),
 		journal:   NewJournal(),
@@ -858,9 +854,9 @@ func (s *OperationDB) Copy() *OperationDB {
 		state.OperationObjectsDirty[addr] = struct{}{}
 	}
 	for hash, logs := range s.logs {
-		cpy := make([]*log.Logger, len(logs))
+		cpy := make([]*block.Log, len(logs))
 		for i, l := range logs {
-			cpy[i] = new(log.Logger)
+			cpy[i] = new(block.Log)
 			*cpy[i] = *l
 		}
 		state.logs[hash] = cpy
@@ -917,6 +913,85 @@ accessList
 type accessList struct {
 	addresses map[entity.Address]int
 	slots     []map[entity.Hash]struct{}
+}
+
+// AddAddress将地址添加到访问列表中，如果操作导致更改（addr以前不在列表中），则返回“true”。
+func (al *accessList) AddAddress(address entity.Address) bool {
+	if _, present := al.addresses[address]; present {
+		return false
+	}
+	al.addresses[address] = -1
+	return true
+}
+
+// DeleteAddress从访问列表中删除地址。此操作需要按照与添加相同的顺序执行。
+//该方法旨在由日记账使用，日记账维护操作顺序。
+func (al *accessList) DeleteAddress(address entity.Address) {
+	delete(al.addresses, address)
+}
+
+// AddSlot将指定的（addr，slot）组合添加到访问列表。
+//返回值为：
+//-地址已添加
+//-已添加插槽
+//对于返回的任何“true”值，必须进行相应的日记账分录。
+func (al *accessList) AddSlot(address entity.Address, slot entity.Hash) (addrChange bool, slotChange bool) {
+	idx, addrPresent := al.addresses[address]
+	if !addrPresent || idx == -1 {
+		// 地址不存在，或地址存在但没有插槽
+		al.addresses[address] = len(al.slots)
+		slotmap := map[entity.Hash]struct{}{slot: {}}
+		al.slots = append(al.slots, slotmap)
+		return !addrPresent, true
+	}
+	// 已经存在（地址、插槽）映射
+	slotmap := al.slots[idx]
+	if _, ok := slotmap[slot]; !ok {
+		slotmap[slot] = struct{}{}
+		// 日记帐添加槽更改
+		return false, true
+	}
+	// 无需更改
+	return false, false
+}
+
+// DeleteSlot从访问列表中删除（地址，插槽）-元组。
+//此操作需要按照与添加相同的顺序执行。该方法旨在由日记账使用，日记账维护操作顺序。
+func (al *accessList) DeleteSlot(address entity.Address, slot entity.Hash) {
+	idx, addrOk := al.addresses[address]
+	// 这有两种失败的方式
+	if !addrOk {
+		panic("reverting slot change, address not present in list")
+	}
+	slotmap := al.slots[idx]
+	delete(slotmap, slot)
+	// 如果这是最后一个（第一个）槽，请将其删除，
+	//因为添加和回滚总是按顺序执行的，我们可以删除该项，而不用担心后期索引会出错
+	if len(slotmap) == 0 {
+		al.slots = al.slots[:idx]
+		al.addresses[address] = -1
+	}
+}
+
+// 包含检查访问列表中是否存在帐户内的插槽，分别返回帐户和插槽存在的单独标志。
+func (al *accessList) Contains(address entity.Address, slot entity.Hash) (addressPresent bool, slotPresent bool) {
+	idx, ok := al.addresses[address]
+	if !ok {
+		// 没有这样的地址（因此零插槽）
+		return false, false
+	}
+	if idx == -1 {
+		// 地址是，但没有插槽
+		return true, false
+	}
+	_, slotPresent = al.slots[idx][slot]
+	return true, slotPresent
+}
+
+// 如果地址在访问列表中，ContainsAddress返回true。
+func (al *accessList) ContainsAddress(address entity.Address) bool {
+	_, ok := al.addresses[address]
+	return ok
 }
 
 // Copy创建访问列表的独立副本。
@@ -1242,8 +1317,13 @@ func (c *cachingDB) OpenTrie(root entity.Hash) (TrieI, error) {
 	return tr, nil
 }
 
+//OpenStorageTrie打开帐户的存储trie。
 func (c *cachingDB) OpenStorageTrie(addrHash, root entity.Hash) (TrieI, error) {
-	panic("implement me")
+	tr, err := trie.NewSecure(addrHash, root, c.db)
+	if err != nil {
+		return nil, err
+	}
+	return tr, nil
 }
 
 //CopyTrie返回给定trie的独立副本。
@@ -1256,14 +1336,30 @@ func (c *cachingDB) CopyTrie(trieI TrieI) TrieI {
 	}
 }
 
+//ContractCode检索特定合同的代码。
 func (c *cachingDB) ContractCode(addrHash, codeHash entity.Hash) ([]byte, error) {
-	panic("implement me")
+	if code := c.codeCache.Get(nil, codeHash.Bytes()); len(code) > 0 {
+		return code, nil
+	}
+	code := rawdb.ReadCode(c.db.DiskDB(), codeHash)
+	if len(code) > 0 {
+		c.codeCache.Set(codeHash.Bytes(), code)
+		c.codeSizeCache.Add(codeHash, len(code))
+		return code, nil
+	}
+	return nil, errors.New("not found")
 }
 
+//ContractCodeSize检索特定合同代码的大小。
 func (c *cachingDB) ContractCodeSize(addrHash, codeHash entity.Hash) (int, error) {
-	panic("implement me")
+	if cached, ok := c.codeSizeCache.Get(codeHash); ok {
+		return cached.(int), nil
+	}
+	code, err := c.ContractCode(addrHash, codeHash)
+	return len(code), err
 }
 
+//TrieDB检索任何中间trie节点缓存层。
 func (c *cachingDB) TrieDB() *trie.TrieDatabase {
 	return c.db
 }

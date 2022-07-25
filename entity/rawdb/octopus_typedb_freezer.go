@@ -4,11 +4,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/go-kit/kit/metrics"
 	"github.com/golang/snappy"
 	"github.com/prometheus/tsdb/fileutil"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/log"
+	"github.com/radiation-octopus/octopus-blockchain/metrics"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
 	"github.com/radiation-octopus/octopus/utils"
@@ -79,9 +79,9 @@ type Freezer struct {
 func NewFreezer(datadir string, namespace string, readonly bool, maxTableSize uint32, tables map[string]bool) (*Freezer, error) {
 	// 创建初始冻结器对象
 	var (
-	//readMeter  = metrics.NewRegisteredMeter(namespace+"ancient/read", nil)
-	//writeMeter = metrics.NewRegisteredMeter(namespace+"ancient/write", nil)
-	//sizeGauge  = metrics.NewRegisteredGauge(namespace+"ancient/size", nil)
+		readMeter  = metrics.NewRegisteredMeter(namespace+"ancient/read", nil)
+		writeMeter = metrics.NewRegisteredMeter(namespace+"ancient/write", nil)
+		sizeGauge  = metrics.NewRegisteredGauge(namespace+"ancient/size", nil)
 	)
 	// 确保datadir不是符号链接（如果存在）。
 	if info, err := os.Lstat(datadir); !os.IsNotExist(err) {
@@ -105,7 +105,7 @@ func NewFreezer(datadir string, namespace string, readonly bool, maxTableSize ui
 
 	// 创建表。
 	for name, disableSnappy := range tables {
-		table, err := newTable(datadir, name, maxTableSize, disableSnappy, readonly)
+		table, err := newTable(datadir, name, readMeter, writeMeter, sizeGauge, maxTableSize, disableSnappy, readonly)
 		if err != nil {
 			for _, table := range freezer.tables {
 				table.Close()
@@ -965,19 +965,19 @@ type freezerTable struct {
 	headId uint32              // 当前活动头文件的编号
 	tailId uint32              // 最早文件的编号
 
-	headBytes int64 // 写入头文件的字节数
-	//readMeter  metrics.Meter // 测量有效读取数据量的仪表
-	//writeMeter metrics.Meter // 测量写入数据有效量的仪表
-	sizeGauge metrics.Gauge // 用于跟踪所有冷冻台组合尺寸的仪表
+	headBytes  int64         // 写入头文件的字节数
+	readMeter  metrics.Meter // 测量有效读取数据量的仪表
+	writeMeter metrics.Meter // 测量写入数据有效量的仪表
+	sizeGauge  metrics.Gauge // 用于跟踪所有冷冻台组合尺寸的仪表
 
-	//logger log.Logger   // 嵌入数据库路径和表名的记录器
-	lock sync.RWMutex // 保护数据文件描述符的互斥体
+	logger log.Logger   // 嵌入数据库路径和表名的记录器
+	lock   sync.RWMutex // 保护数据文件描述符的互斥体
 }
 
 const indexEntrySize = 6
 
 //newTable打开一个冻结表，如果数据和索引文件不存在，则创建它们。这两个文件都被截断为最短的公共长度，以确保它们不会失去同步。
-func newTable(path string, name string, maxFilesize uint32, noCompression, readonly bool) (*freezerTable, error) {
+func newTable(path string, name string, readMeter metrics.Meter, writeMeter metrics.Meter, sizeGauge metrics.Gauge, maxFilesize uint32, noCompression, readonly bool) (*freezerTable, error) {
 	// 确保包含目录存在并打开indexEntry文件
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return nil, err
@@ -1018,15 +1018,15 @@ func newTable(path string, name string, maxFilesize uint32, noCompression, reado
 	}
 	// 创建表并修复过去的任何不一致
 	tab := &freezerTable{
-		index: index,
-		meta:  meta,
-		files: make(map[uint32]*os.File),
-		//readMeter:     readMeter,
-		//writeMeter:    writeMeter,
-		//sizeGauge:     sizeGauge,
-		name: name,
-		path: path,
-		//logger:        log.New("database", path, "table", name),
+		index:         index,
+		meta:          meta,
+		files:         make(map[uint32]*os.File),
+		readMeter:     readMeter,
+		writeMeter:    writeMeter,
+		sizeGauge:     sizeGauge,
+		name:          name,
+		path:          path,
+		logger:        log.New("database", path, "table", name),
 		noCompression: noCompression,
 		readonly:      readonly,
 		maxFileSize:   maxFilesize,
@@ -1036,12 +1036,12 @@ func newTable(path string, name string, maxFilesize uint32, noCompression, reado
 		return nil, err
 	}
 	//初始化起始大小计数器
-	//size, err := tab.sizeNolock()
+	size, err := tab.sizeNolock()
 	if err != nil {
 		tab.Close()
 		return nil, err
 	}
-	//tab.sizeGauge.Inc(int64(size))
+	tab.sizeGauge.Inc(int64(size))
 	return tab, nil
 }
 
@@ -1702,7 +1702,7 @@ func (t *freezerTable) getIndices(from, count uint64) ([]*indexEntry, error) {
 
 // NewFreezerTable将给定路径作为冻结表打开。
 func NewFreezerTable(path, name string, disableSnappy, readonly bool) (*freezerTable, error) {
-	return newTable(path, name, freezerTableSize, disableSnappy, readonly)
+	return newTable(path, name, metrics.NilMeter{}, metrics.NilMeter{}, metrics.NilGauge{}, freezerTableSize, disableSnappy, readonly)
 }
 
 const freezerVersion = 1 // 冷冻柜表元数据的初始版本标记

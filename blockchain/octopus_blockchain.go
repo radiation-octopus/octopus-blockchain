@@ -4,18 +4,14 @@ import (
 	"errors"
 	"fmt"
 	lru "github.com/hashicorp/golang-lru"
-	"github.com/radiation-octopus/octopus-blockchain/blockchain/blockchainconfig"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
-	genesis2 "github.com/radiation-octopus/octopus-blockchain/entity/genesis"
 	"github.com/radiation-octopus/octopus-blockchain/entity/prque"
 	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
 	"github.com/radiation-octopus/octopus-blockchain/event"
 	"github.com/radiation-octopus/octopus-blockchain/internal/syncx"
 	"github.com/radiation-octopus/octopus-blockchain/log"
-	"github.com/radiation-octopus/octopus-blockchain/node"
-	"github.com/radiation-octopus/octopus-blockchain/oct/octconfig"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb/trie"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
@@ -182,60 +178,8 @@ func (it *insertIterator) previous() *block2.Header {
 }
 
 //链启动类，配置参数启动
-func (bc *BlockChain) start(node *node.Node, config *octconfig.Config) {
-	genesis := genesis2.MakeGenesis()
-	//config := &octconfig.Config{
-	//	Genesis:   genesis,
-	//	NetworkId: genesis.Config.ChainID.Uint64(),
-	//	//SyncMode:        downloader.FullSync,
-	//	DatabaseCache:   256,
-	//	DatabaseHandles: 256,
-	//	TxPool:          blockchainconfig.DefaultTxPoolConfig,
-	//	//GPO:             ethconfig.Defaults.GPO,
-	//	//Octell:          ethconfig.Defaults.Octell,
-	//	Miner: blockchainconfig.Config{
-	//		Octerbase: entity.Address{1},
-	//		GasCeil:   genesis.GasLimit * 11 / 10,
-	//		GasPrice:  big.NewInt(1),
-	//		Recommit:  time.Second,
-	//	},
-	//	RPCTxFeeCap: 1,
-	//}
-	config.Genesis = genesis
-	config.NetworkId = genesis.Config.ChainID.Uint64()
-	config.DatabaseCache = 256
-	config.DatabaseHandles = 256
-	config.TxPool = blockchainconfig.DefaultTxPoolConfig
-	config.Miner.Octerbase = entity.Address{1}
-	config.Miner.GasCeil = genesis.GasLimit * 11 / 10
-	config.Miner.GasPrice = big.NewInt(1)
-	config.Miner.Recommit = time.Second
-	//组装以太坊对象
-	chainDb, err := node.OpenDatabaseWithFreezer("chaindata", config.DatabaseCache, config.DatabaseHandles, config.DatabaseFreezer, "oct/db/chaindata/", false)
-	bc.db = chainDb
-	//构造创世区块
-	//genesis := genesis2.DefaultGenesisBlock()
-	chainConfig, _, _ := genesis2.SetupGenesisBlockWithOverride(bc.db, genesis, nil, nil)
+func (bc *BlockChain) start(chainConfig *entity.ChainConfig) {
 
-	if err != nil {
-		errors.New("chainDb start failed")
-	}
-	var cacheConfig = &CacheConfig{
-		//TrieCleanLimit:      config.TrieCleanCache,
-		//TrieCleanJournal:    stack.ResolvePath(config.TrieCleanCacheJournal),
-		//TrieCleanRejournal:  config.TrieCleanCacheRejournal,
-		//TrieCleanNoPrefetch: config.NoPrefetch,
-		//TrieDirtyLimit:      config.TrieDirtyCache,
-		//TrieDirtyDisabled:   config.NoPruning,
-		//TrieTimeLimit:       config.TrieTimeout,
-		//SnapshotLimit:       config.SnapshotCache,
-		//Preimages:           config.Preimages,
-	}
-	//初始化区块链
-	bc, erro := newBlockChain(bc, cacheConfig, chainConfig, nil, nil)
-	if erro != nil {
-		errors.New("blockchain start fail")
-	}
 }
 
 //链终止
@@ -262,14 +206,18 @@ func (bc *BlockChain) GetVMConfig() *vm.Config {
 }
 
 //构建区块链结构体
-func newBlockChain(bc *BlockChain, cacheConfig *CacheConfig, chainConfig *entity.ChainConfig, engine consensus.Engine, shouldPreserve func(header *block2.Header) bool) (*BlockChain, error) {
+func NewBlockChain(bc *BlockChain, database typedb.Database, cacheConfig *CacheConfig, chainConfig *entity.ChainConfig, engine consensus.Engine, shouldPreserve func(header *block2.Header) bool) (*BlockChain, error) {
 	futureBlocks, _ := lru.New(maxFutureBlocks)
+	bc.db = database
 	bc.quit = make(chan struct{})
 	bc.futureBlocks = futureBlocks
 	bc.engine = engine
 	bc.chainConfig = chainConfig
 	bc.cacheConfig = cacheConfig
 	bc.triegc = prque.New(nil)
+	//bc.vmConfig = vm.Config{
+	//	EnablePreimageRecording: octCfg.EnablePreimageRecording,
+	//}
 	//bc = &BlockChain{
 	//	db:   db,
 	//	quit: make(chan struct{}),

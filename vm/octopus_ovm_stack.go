@@ -11,6 +11,8 @@ var stackPool = sync.Pool{
 	},
 }
 
+//堆栈是用于基本堆栈操作的对象。
+//弹出到堆栈中的项目预计将被更改和修改。堆栈不负责添加新初始化的对象。
 type Stack struct {
 	data []uint256.Int
 }

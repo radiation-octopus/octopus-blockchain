@@ -29,14 +29,29 @@ func (c *TxConsole) TxCmd(inMap map[string]interface{}) interface{} {
 	c.OctAPIBackend.oct = c.Oct
 	c.OctAPIBackend.allowUnprotectedTxs = true
 	fr := entity.HexToAddress(utils.GetInToStr(inMap["from"]))
-	to := entity.HexToAddress(utils.GetInToStr(inMap["to"]))
-	g := hexutil.Uint64(21000)
+	g := hexutil.Uint64(5100000)
 	args := ethapi.TransactionArgs{
 		From: &fr,
-		To:   &to,
+	}
+	//构造智能合约参数
+	data := utils.GetInToStr(inMap["data"])
+	if data != "" {
+		d := operationutils.FromHex(data)
+		args.Data = newRPCBytes(d)
+	}
+	//调用智能合约参数
+	input := utils.GetInToStr(inMap["input"])
+	if input != "" {
+		in := operationutils.FromHex(input)
+		args.Input = newRPCBytes(in)
+	}
+	to := utils.GetInToStr(inMap["to"])
+	if to != "" {
+		to := entity.HexToAddress(utils.GetInToStr(inMap["to"]))
+		args.To = &to
 	}
 	args.Gas = &g
-	args.Value = (*hexutil.Big)(big.NewInt(3000))
+	args.Value = (*hexutil.Big)(big.NewInt(1900000))
 	nonceLock := new(ethapi.AddrLocker)
 	c.PersonalAccountAPI = ethapi.NewPersonalAccountAPI(c.Oct.APIBackend, nonceLock)
 	ha, err := c.PersonalAccountAPI.SendTransaction(nil, args, utils.GetInToStr(inMap["pass"]))
@@ -44,11 +59,12 @@ func (c *TxConsole) TxCmd(inMap map[string]interface{}) interface{} {
 	if err != nil {
 		return err
 	}
-	//ha, err := SubmitTransaction(c.OctAPIBackend, signtx)
-	//if err != nil {
-	//	return err
-	//}
 	return ha
+}
+
+func newRPCBytes(bytes []byte) *hexutil.Bytes {
+	rpcBytes := hexutil.Bytes(bytes)
+	return &rpcBytes
 }
 
 // signTransaction设置默认值并对给定事务进行签名

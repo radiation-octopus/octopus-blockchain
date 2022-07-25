@@ -17,7 +17,6 @@
 package rpc
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -171,41 +170,42 @@ func (c *Client) sendBatchHTTP(ctx context.Context, op *requestOp, msgs []*jsonr
 }
 
 func (hc *httpConn) doRequest(ctx context.Context, msg interface{}) (io.ReadCloser, error) {
-	body, err := json.Marshal(msg)
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", hc.url, io.NopCloser(bytes.NewReader(body)))
-	if err != nil {
-		return nil, err
-	}
-	req.ContentLength = int64(len(body))
-	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
-
-	// set headers
-	hc.mu.Lock()
-	req.Header = hc.headers.Clone()
-	hc.mu.Unlock()
-
-	// do request
-	resp, err := hc.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var buf bytes.Buffer
-		var body []byte
-		if _, err := buf.ReadFrom(resp.Body); err == nil {
-			body = buf.Bytes()
-		}
-
-		return nil, HTTPError{
-			Status:     resp.Status,
-			StatusCode: resp.StatusCode,
-			Body:       body,
-		}
-	}
-	return resp.Body, nil
+	//456body, err := json.Marshal(msg)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//req, err := http.NewRequestWithContext(ctx, "POST", hc.url, io.NopCloser(bytes.NewReader(body)))
+	//if err != nil {
+	//	return nil, err
+	//}
+	//req.ContentLength = int64(len(body))
+	//req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	//
+	//// set headers
+	//hc.mu.Lock()
+	//req.Header = hc.headers.Clone()
+	//hc.mu.Unlock()
+	//
+	//// do request
+	//resp, err := hc.client.Do(req)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	//	var buf bytes.Buffer
+	//	var body []byte
+	//	if _, err := buf.ReadFrom(resp.Body); err == nil {
+	//		body = buf.Bytes()
+	//	}
+	//
+	//	return nil, HTTPError{
+	//		Status:     resp.Status,
+	//		StatusCode: resp.StatusCode,
+	//		Body:       body,
+	//	}
+	//}
+	//return resp.Body, nil
+	return nil, nil
 }
 
 // httpServerConn turns a HTTP connection into a Conn.

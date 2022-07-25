@@ -14,6 +14,8 @@ func init() {
 	mam["pass"] = ""
 	mam["from"] = ""
 	mam["to"] = ""
+	mam["data"] = ""
+	mam["input"] = ""
 	console.BindingConsole(
 		new(TxConsole),
 		"TxCmd",

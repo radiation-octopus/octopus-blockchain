@@ -58,10 +58,34 @@ type (
 		account *entity.Address
 		prev    uint64
 	}
+	storageChange struct {
+		account       *entity.Address
+		key, prevalue entity.Hash
+	}
+	suicideChange struct {
+		account     *entity.Address
+		prev        bool // 账户是否已经自杀
+		prevbalance *big.Int
+	}
+	// 访问列表的更改
+	accessListAddAccountChange struct {
+		address *entity.Address
+	}
+	accessListAddSlotChange struct {
+		address *entity.Address
+		slot    *entity.Hash
+	}
+	// 对其他状态值的更改。
+	refundChange struct {
+		prev uint64
+	}
+	addLogChange struct {
+		txhash entity.Hash
+	}
 )
 
 func (ch codeChange) revert(o *OperationDB) {
-	o.getStateObject(*ch.account).setCode(entity.BytesToHash(ch.prevhash), ch.prevcode)
+	o.getOperationObject(*ch.account).setCode(entity.BytesToHash(ch.prevhash), ch.prevcode)
 }
 
 func (ch codeChange) dirtied() *entity.Address {
@@ -89,7 +113,7 @@ func (r resetObjectChange) dirtied() *entity.Address {
 }
 
 func (ch balanceChange) revert(s *OperationDB) {
-	s.getStateObject(*ch.account).setBalance(ch.prev)
+	s.getOperationObject(*ch.account).setBalance(ch.prev)
 }
 
 func (ch balanceChange) dirtied() *entity.Address {
@@ -97,9 +121,73 @@ func (ch balanceChange) dirtied() *entity.Address {
 }
 
 func (ch nonceChange) revert(s *OperationDB) {
-	s.getStateObject(*ch.account).setNonce(ch.prev)
+	s.getOperationObject(*ch.account).setNonce(ch.prev)
 }
 
 func (ch nonceChange) dirtied() *entity.Address {
 	return ch.account
+}
+
+func (ch storageChange) revert(s *OperationDB) {
+	s.getOperationObject(*ch.account).setState(ch.key, ch.prevalue)
+}
+
+func (ch storageChange) dirtied() *entity.Address {
+	return ch.account
+}
+
+func (ch suicideChange) revert(s *OperationDB) {
+	obj := s.getOperationObject(*ch.account)
+	if obj != nil {
+		obj.suicided = ch.prev
+		obj.setBalance(ch.prevbalance)
+	}
+}
+
+func (ch suicideChange) dirtied() *entity.Address {
+	return ch.account
+}
+func (ch accessListAddAccountChange) revert(s *OperationDB) {
+	/*
+		这里一个重要的不变量是，每当添加（addr，slot）时，
+		如果addr尚未存在，则添加会导致两个日记账分录：
+		-一个代表地址，
+		-一个用于（地址、插槽）
+		因此，在展开更改时，我们始终可以在此时盲目删除（addr），因为在发生单个（addr）更改时，不会保留任何存储添加。
+	*/
+	s.accessList.DeleteAddress(*ch.address)
+}
+
+func (ch accessListAddAccountChange) dirtied() *entity.Address {
+	return nil
+}
+
+func (ch accessListAddSlotChange) revert(s *OperationDB) {
+	s.accessList.DeleteSlot(*ch.address, *ch.slot)
+}
+
+func (ch accessListAddSlotChange) dirtied() *entity.Address {
+	return nil
+}
+
+func (ch refundChange) revert(s *OperationDB) {
+	s.refund = ch.prev
+}
+
+func (ch refundChange) dirtied() *entity.Address {
+	return nil
+}
+
+func (ch addLogChange) revert(s *OperationDB) {
+	logs := s.logs[ch.txhash]
+	if len(logs) == 1 {
+		delete(s.logs, ch.txhash)
+	} else {
+		s.logs[ch.txhash] = logs[:len(logs)-1]
+	}
+	s.logSize--
+}
+
+func (ch addLogChange) dirtied() *entity.Address {
+	return nil
 }

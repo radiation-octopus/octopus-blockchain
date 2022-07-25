@@ -1,61 +1,30 @@
+// Copyright 2015 The go-ethereum Authors
+// This file is part of the go-ethereum library.
+//
+// The go-ethereum library is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// The go-ethereum library is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
+
 package vm
 
 import (
-	"errors"
-	"fmt"
-	"github.com/holiman/uint256"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus/utils"
-	"golang.org/x/crypto/sha3"
-	"math/big"
 	"sync/atomic"
-)
 
-// 列出ovm执行错误
-var (
-	ErrOutOfGas                 = errors.New("out of gas")
-	ErrCodeStoreOutOfGas        = errors.New("contract creation code storage out of gas")
-	ErrDepth                    = errors.New("max call depth exceeded")
-	ErrInsufficientBalance      = errors.New("insufficient balance for transfer")
-	ErrContractAddressCollision = errors.New("contract address collision")
-	ErrExecutionReverted        = errors.New("execution reverted")
-	ErrMaxCodeSizeExceeded      = errors.New("max code size exceeded")
-	ErrInvalidJump              = errors.New("invalid jump destination")
-	ErrWriteProtection          = errors.New("write protection")
-	ErrReturnDataOutOfBounds    = errors.New("return data out of bounds")
-	ErrGasUintOverflow          = errors.New("gas uint64 overflow")
-	ErrInvalidCode              = errors.New("invalid code: must not begin with 0xef")
-	ErrNonceUintOverflow        = errors.New("nonce uint64 overflow")
-
-	// errStopToken is an internal token indicating interpreter loop termination,
-	// never returned to outside callers.
-	errStopToken = errors.New("stop token")
-)
-
-// ErrInvalidOpCode wraps an evm error when an invalid opcode is encountered.
-type ErrInvalidOpCode struct {
-	opcode OpCode
-}
-
-func (e *ErrInvalidOpCode) Error() string { return fmt.Sprintf("invalid opcode: %s", e.opcode) }
-
-var (
-	big0      = big.NewInt(0)
-	big1      = big.NewInt(1)
-	big3      = big.NewInt(3)
-	big4      = big.NewInt(4)
-	big7      = big.NewInt(7)
-	big8      = big.NewInt(8)
-	big16     = big.NewInt(16)
-	big20     = big.NewInt(20)
-	big32     = big.NewInt(32)
-	big64     = big.NewInt(64)
-	big96     = big.NewInt(96)
-	big480    = big.NewInt(480)
-	big1024   = big.NewInt(1024)
-	big3072   = big.NewInt(3072)
-	big199680 = big.NewInt(199680)
+	"github.com/holiman/uint256"
+	"golang.org/x/crypto/sha3"
 )
 
 func opAdd(pc *uint64, interpreter *OVMInterpreter, scope *ScopeContext) ([]byte, error) {
@@ -218,9 +187,11 @@ func opMulmod(pc *uint64, interpreter *OVMInterpreter, scope *ScopeContext) ([]b
 	return nil, nil
 }
 
-// opSHL实现左移位SHL指令（左移位）从堆栈中弹出2个值，首先是arg1，然后是arg2，并推动向左移位arg1位数的堆栈arg2。
+// opSHL implements Shift Left
+// The SHL instruction (shift left) pops 2 values from the stack, first arg1 and then arg2,
+// and pushes on the stack arg2 shifted to the left by arg1 number of bits.
 func opSHL(pc *uint64, interpreter *OVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	// 注意，第二个操作数留在堆栈中；将结果累积到其中，之后无需再推送
+	// Note, second operand is left in the stack; accumulate result into it, and no need to push it afterwards
 	shift, value := scope.Stack.pop(), scope.Stack.peek()
 	if shift.LtUint64(256) {
 		value.Lsh(value, uint(shift.Uint64()))
@@ -611,44 +582,44 @@ func opCreate(pc *uint64, interpreter *OVMInterpreter, scope *ScopeContext) ([]b
 	if interpreter.readOnly {
 		return nil, ErrWriteProtection
 	}
-	//var (
-	//	value        = scope.Stack.pop()
-	//	offset, size = scope.Stack.pop(), scope.Stack.pop()
-	//	input        = scope.Memory.GetCopy(int64(offset.Uint64()), int64(size.Uint64()))
-	//	gas          = scope.Contract.Gas
-	//)
-	////if interpreter.ovm.chainRules.IsEIP150 {
-	////	gas -= gas / 64
-	////}
-	//// reuse size int for stackvalue
-	//stackvalue := size
-	//
-	//scope.Contract.UseGas(gas)
-	////TODO: use uint256.Int instead of converting with toBig()
-	//var bigVal = big0
-	//if !value.IsZero() {
-	//	bigVal = value.ToBig()
-	//}
+	var (
+		value        = scope.Stack.pop()
+		offset, size = scope.Stack.pop(), scope.Stack.pop()
+		input        = scope.Memory.GetCopy(int64(offset.Uint64()), int64(size.Uint64()))
+		gas          = scope.Contract.Gas
+	)
+	if interpreter.ovm.chainRules.IsEIP150 {
+		gas -= gas / 64
+	}
+	// reuse size int for stackvalue
+	stackvalue := size
 
-	//res, addr, returnGas, suberr := interpreter.ovm.Create(scope.Contract, input, gas, bigVal)
-	//// Push item on the stack based on the returned error. If the ruleset is
-	//// homestead we must check for CodeStoreOutOfGasError (homestead only
-	//// rule) and treat as an error, if the ruleset is frontier we must
-	//// ignore this error and pretend the operation was successful.
-	//if interpreter.ovm.chainRules.IsHomestead && suberr == ErrCodeStoreOutOfGas {
-	//	stackvalue.Clear()
-	//} else if suberr != nil && suberr != ErrCodeStoreOutOfGas {
-	//	stackvalue.Clear()
-	//} else {
-	//	stackvalue.SetBytes(addr.Bytes())
-	//}
-	//scope.Stack.push(&stackvalue)
-	//scope.Contract.Gas += returnGas
-	//
-	//if suberr == ErrExecutionReverted {
-	//	interpreter.returnData = res // set REVERT data to return data buffer
-	//	return res, nil
-	//}
+	scope.Contract.UseGas(gas)
+	//TODO: use uint256.Int instead of converting with toBig()
+	var bigVal = operationutils.Big0
+	if !value.IsZero() {
+		bigVal = value.ToBig()
+	}
+
+	res, addr, returnGas, suberr := interpreter.ovm.Create(scope.Contract, input, gas, bigVal)
+	// Push item on the stack based on the returned error. If the ruleset is
+	// homestead we must check for CodeStoreOutOfGasError (homestead only
+	// rule) and treat as an error, if the ruleset is frontier we must
+	// ignore this error and pretend the operation was successful.
+	if interpreter.ovm.chainRules.IsHomestead && suberr == ErrCodeStoreOutOfGas {
+		stackvalue.Clear()
+	} else if suberr != nil && suberr != ErrCodeStoreOutOfGas {
+		stackvalue.Clear()
+	} else {
+		stackvalue.SetBytes(addr.Bytes())
+	}
+	scope.Stack.push(&stackvalue)
+	scope.Contract.Gas += returnGas
+
+	if suberr == ErrExecutionReverted {
+		interpreter.returnData = res // set REVERT data to return data buffer
+		return res, nil
+	}
 	interpreter.returnData = nil // clear dirty return data buffer
 	return nil, nil
 }
@@ -657,39 +628,39 @@ func opCreate2(pc *uint64, interpreter *OVMInterpreter, scope *ScopeContext) ([]
 	if interpreter.readOnly {
 		return nil, ErrWriteProtection
 	}
-	//var (
-	//	endowment    = scope.Stack.pop()
-	//	offset, size = scope.Stack.pop(), scope.Stack.pop()
-	//	salt         = scope.Stack.pop()
-	//	input        = scope.Memory.GetCopy(int64(offset.Uint64()), int64(size.Uint64()))
-	//	gas          = scope.Contract.Gas
-	//)
+	var (
+		endowment    = scope.Stack.pop()
+		offset, size = scope.Stack.pop(), scope.Stack.pop()
+		salt         = scope.Stack.pop()
+		input        = scope.Memory.GetCopy(int64(offset.Uint64()), int64(size.Uint64()))
+		gas          = scope.Contract.Gas
+	)
 
 	// Apply EIP150
-	//gas -= gas / 64
-	//scope.Contract.UseGas(gas)
-	//// reuse size int for stackvalue
-	//stackvalue := size
-	////TODO: use uint256.Int instead of converting with toBig()
-	//bigEndowment := big0
-	//if !endowment.IsZero() {
-	//	bigEndowment = endowment.ToBig()
-	//}
-	//res, addr, returnGas, suberr := interpreter.ovm.Create2(scope.Contract, input, gas,
-	//	bigEndowment, &salt)
-	//// Push item on the stack based on the returned error.
-	//if suberr != nil {
-	//	stackvalue.Clear()
-	//} else {
-	//	stackvalue.SetBytes(addr.Bytes())
-	//}
-	//scope.Stack.push(&stackvalue)
-	//scope.Contract.Gas += returnGas
-	//
-	//if suberr == ErrExecutionReverted {
-	//	interpreter.returnData = res // set REVERT data to return data buffer
-	//	return res, nil
-	//}
+	gas -= gas / 64
+	scope.Contract.UseGas(gas)
+	// reuse size int for stackvalue
+	stackvalue := size
+	//TODO: use uint256.Int instead of converting with toBig()
+	bigEndowment := operationutils.Big0
+	if !endowment.IsZero() {
+		bigEndowment = endowment.ToBig()
+	}
+	res, addr, returnGas, suberr := interpreter.ovm.Create2(scope.Contract, input, gas,
+		bigEndowment, &salt)
+	// Push item on the stack based on the returned error.
+	if suberr != nil {
+		stackvalue.Clear()
+	} else {
+		stackvalue.SetBytes(addr.Bytes())
+	}
+	scope.Stack.push(&stackvalue)
+	scope.Contract.Gas += returnGas
+
+	if suberr == ErrExecutionReverted {
+		interpreter.returnData = res // set REVERT data to return data buffer
+		return res, nil
+	}
 	interpreter.returnData = nil // clear dirty return data buffer
 	return nil, nil
 }
@@ -709,9 +680,9 @@ func opCall(pc *uint64, interpreter *OVMInterpreter, scope *ScopeContext) ([]byt
 	if interpreter.readOnly && !value.IsZero() {
 		return nil, ErrWriteProtection
 	}
-	var bigVal = big0
+	var bigVal = operationutils.Big0
 	//TODO: use uint256.Int instead of converting with toBig()
-	// By using big0 here, we save an alloc for the most entity case (non-ether-transferring contract calls),
+	// By using operationutils.Big0 here, we save an alloc for the most entity case (non-ether-transferring contract calls),
 	// but it would make more sense to extend the usage of uint256.Int
 	if !value.IsZero() {
 		gas += entity.CallStipend
@@ -749,7 +720,7 @@ func opCallCode(pc *uint64, interpreter *OVMInterpreter, scope *ScopeContext) ([
 	args := scope.Memory.GetPtr(int64(inOffset.Uint64()), int64(inSize.Uint64()))
 
 	//TODO: use uint256.Int instead of converting with toBig()
-	var bigVal = big0
+	var bigVal = operationutils.Big0
 	if !value.IsZero() {
 		gas += entity.CallStipend
 		bigVal = value.ToBig()
@@ -803,31 +774,31 @@ func opDelegateCall(pc *uint64, interpreter *OVMInterpreter, scope *ScopeContext
 
 func opStaticCall(pc *uint64, interpreter *OVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	// Pop gas. The actual gas is in interpreter.ovm.callGasTemp.
-	//stack := scope.Stack
+	stack := scope.Stack
 	// We use it as a temporary value
-	//temp := stack.pop()
-	//gas := interpreter.ovm.callGasTemp
-	//// Pop other call parameters.
-	//addr, inOffset, inSize, retOffset, retSize := stack.pop(), stack.pop(), stack.pop(), stack.pop(), stack.pop()
-	//toAddr := entity.Address(addr.Bytes20())
-	//// Get arguments from the memory.
-	//args := scope.Memory.GetPtr(int64(inOffset.Uint64()), int64(inSize.Uint64()))
-	//
-	////ret, returnGas, err := interpreter.ovm.StaticCall(scope.Contract, toAddr, args, gas)
-	//if err != nil {
-	//	temp.Clear()
-	//} else {
-	//	temp.SetOne()
-	//}
-	//stack.push(&temp)
-	//if err == nil || err == ErrExecutionReverted {
-	//	ret = utils.CopyBytes(ret)
-	//	scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
-	//}
-	//scope.Contract.Gas += returnGas
-	//
-	//interpreter.returnData = ret
-	return nil, nil
+	temp := stack.pop()
+	gas := interpreter.ovm.callGasTemp
+	// Pop other call parameters.
+	addr, inOffset, inSize, retOffset, retSize := stack.pop(), stack.pop(), stack.pop(), stack.pop(), stack.pop()
+	toAddr := entity.Address(addr.Bytes20())
+	// Get arguments from the memory.
+	args := scope.Memory.GetPtr(int64(inOffset.Uint64()), int64(inSize.Uint64()))
+
+	ret, returnGas, err := interpreter.ovm.StaticCall(scope.Contract, toAddr, args, gas)
+	if err != nil {
+		temp.Clear()
+	} else {
+		temp.SetOne()
+	}
+	stack.push(&temp)
+	if err == nil || err == ErrExecutionReverted {
+		ret = utils.CopyBytes(ret)
+		scope.Memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
+	}
+	scope.Contract.Gas += returnGas
+
+	interpreter.returnData = ret
+	return ret, nil
 }
 
 func opReturn(pc *uint64, interpreter *OVMInterpreter, scope *ScopeContext) ([]byte, error) {
@@ -878,21 +849,21 @@ func makeLog(size int) executionFunc {
 		}
 		topics := make([]entity.Hash, size)
 		stack := scope.Stack
-		//mStart, mSize := stack.pop(), stack.pop()
+		mStart, mSize := stack.pop(), stack.pop()
 		for i := 0; i < size; i++ {
 			addr := stack.pop()
 			topics[i] = addr.Bytes32()
 		}
 
-		//d := scope.Memory.GetCopy(int64(mStart.Uint64()), int64(mSize.Uint64()))
-		//interpreter.ovm.Operationdb.AddLog(&types.Log{
-		//	Address: scope.Contract.Address(),
-		//	Topics:  topics,
-		//	Data:    d,
-		//	// This is a non-consensus field, but assigned here because
-		//	// core/state doesn't know the current block number.
-		//	BlockNumber: interpreter.ovm.Context.BlockNumber.Uint64(),
-		//})
+		d := scope.Memory.GetCopy(int64(mStart.Uint64()), int64(mSize.Uint64()))
+		interpreter.ovm.Operationdb.AddLog(&block.Log{
+			Address: scope.Contract.Address(),
+			Topics:  topics,
+			Data:    d,
+			// This is a non-consensus field, but assigned here because
+			// core/state doesn't know the current block number.
+			BlockNumber: interpreter.ovm.Context.BlockNumber.Uint64(),
+		})
 
 		return nil, nil
 	}

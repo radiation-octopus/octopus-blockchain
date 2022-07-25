@@ -15,14 +15,6 @@ type freezerdb struct {
 	typedb.AncientStore
 }
 
-func (frdb *freezerdb) Stat(property string) (string, error) {
-	panic("implement me")
-}
-
-func (frdb *freezerdb) Compact(start []byte, limit []byte) error {
-	panic("implement me")
-}
-
 // 关门。Closer，关闭快速键值存储和慢速古代表。
 func (frdb *freezerdb) Close() error {
 	var errs []error
@@ -41,6 +33,9 @@ func (frdb *freezerdb) Close() error {
 // NewDatabaseWithFriezer在给定的键值数据存储上创建一个高级数据库，通过一个冷冻库将不变的链段移动到冷藏库中。
 func NewDatabaseWithFreezer(db typedb.KeyValueStore, freezer string, namespace string, readonly bool) (typedb.Database, error) {
 	//创建空闲冻结器实例
+	a := db.NewBatch()
+	a.ValueSize()
+	fmt.Println(a)
 	frdb, err := newChainFreezer(freezer, namespace, readonly, freezerTableSize, FreezerNoSnappy)
 	if err != nil {
 		return nil, err

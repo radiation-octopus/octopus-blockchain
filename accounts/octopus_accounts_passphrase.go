@@ -16,7 +16,6 @@ import (
 	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/crypto/scrypt"
 	"io"
-	"os"
 	"path/filepath"
 )
 
@@ -49,19 +48,20 @@ type keyStorePassphrase struct {
 
 func (ks *keyStorePassphrase) GetKey(addr entity.Address, filename string, auth string) (*Key, error) {
 	// 从密钥库加载密钥并解密其内容
-	keyjson, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-	key, err := DecryptKey(keyjson, auth)
-	if err != nil {
-		return nil, err
-	}
-	// 确保我们确实在对请求的密钥进行操作（无交换攻击）
-	if key.Address != addr {
-		return nil, fmt.Errorf("key content mismatch: have account %x, want %x", key.Address, addr)
-	}
-	return key, nil
+	//456keyjson, err := os.ReadFile(filename)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//key, err := DecryptKey(keyjson, auth)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//// 确保我们确实在对请求的密钥进行操作（无交换攻击）
+	//if key.Address != addr {
+	//	return nil, fmt.Errorf("key content mismatch: have account %x, want %x", key.Address, addr)
+	//}
+	//return key, nil
+	return nil, nil
 }
 
 func (ks *keyStorePassphrase) StoreKey(filename string, key *Key, auth string) error {

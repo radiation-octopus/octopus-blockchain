@@ -38,7 +38,6 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/event"
 	"github.com/radiation-octopus/octopus-blockchain/log"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -88,26 +87,26 @@ type Hub struct {
 
 func (hub *Hub) readPairings() error {
 	hub.pairings = make(map[string]smartcardPairing)
-	pairingFile, err := os.Open(filepath.Join(hub.datadir, "smartcards.json"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
+	//456pairingFile, err := os.Open(filepath.Join(hub.datadir, "smartcards.json"))
+	//if err != nil {
+	//	if os.IsNotExist(err) {
+	//		return nil
+	//	}
+	//	return err
+	//}
+	//
+	//pairingData, err := io.ReadAll(pairingFile)
+	//if err != nil {
+	//	return err
+	//}
+	//var pairings []smartcardPairing
+	//if err := json.Unmarshal(pairingData, &pairings); err != nil {
+	//	return err
+	//}
 
-	pairingData, err := io.ReadAll(pairingFile)
-	if err != nil {
-		return err
-	}
-	var pairings []smartcardPairing
-	if err := json.Unmarshal(pairingData, &pairings); err != nil {
-		return err
-	}
-
-	for _, pairing := range pairings {
-		hub.pairings[string(pairing.PublicKey)] = pairing
-	}
+	//for _, pairing := range pairings {
+	//	hub.pairings[string(pairing.PublicKey)] = pairing
+	//}
 	return nil
 }
 

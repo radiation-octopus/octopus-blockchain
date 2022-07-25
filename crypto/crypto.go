@@ -100,6 +100,11 @@ func CreateAddress(b entity.Address, nonce uint64) entity.Address {
 	return entity.BytesToAddress(Keccak256(data)[12:])
 }
 
+// CreateAddress2在给定地址字节、初始合同代码哈希和salt的情况下创建以太坊地址。
+func CreateAddress2(b entity.Address, salt [32]byte, inithash []byte) entity.Address {
+	return entity.BytesToAddress(Keccak256([]byte{0xff}, b.Bytes(), salt[:], inithash)[12:])
+}
+
 func zeroBytes(bytes []byte) {
 	for i := range bytes {
 		bytes[i] = 0
@@ -182,8 +187,9 @@ func LoadECDSA(file string) (*ecdsa.PrivateKey, error) {
 
 // SaveECDSA将secp256k1私钥保存到具有限制权限的给定文件。密钥数据以十六进制编码保存。
 func SaveECDSA(file string, key *ecdsa.PrivateKey) error {
-	k := hex.EncodeToString(FromECDSA(key))
-	return os.WriteFile(file, []byte(k), 0600)
+	//456k := hex.EncodeToString(FromECDSA(key))
+	//return os.WriteFile(file, []byte(k), 0600)
+	return nil
 }
 
 // checkKeyFileEnd跳过密钥文件末尾的其他换行符。

@@ -18,6 +18,7 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb/trie"
 	"github.com/radiation-octopus/octopus-blockchain/p2p"
+	"github.com/radiation-octopus/octopus-blockchain/p2p/enode"
 	"github.com/radiation-octopus/octopus-blockchain/rpc"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
 	"github.com/radiation-octopus/octopus-blockchain/vm"
@@ -30,12 +31,12 @@ type Octopus struct {
 	config *octconfig.Config
 
 	// Handlers
-	txPool     *blockchain.TxPool
-	Blockchain *blockchain.BlockChain `autoInjectLang:"blockchain.BlockChain"`
-	handler    *handler
-	//ethDialCandidates  enode.Iterator
-	//snapDialCandidates enode.Iterator
-	//merger             *consensus.Merger
+	txPool             *blockchain.TxPool
+	Blockchain         *blockchain.BlockChain `autoInjectLang:"blockchain.BlockChain"`
+	handler            *handler
+	ethDialCandidates  enode.Iterator
+	snapDialCandidates enode.Iterator
+	merger             *consensus.Merger
 
 	// DB interfaces
 	chainDb typedb.Database // 区块链数据库
@@ -183,6 +184,10 @@ func (oct *Octopus) StateAtBlock(b *block2.Block, reexec uint64, base *operation
 func (oct *Octopus) start(config *octconfig.Config) {
 	log.Info("oct starting")
 	New(oct, config)
+
+	// 根据服务器限制计算最大对等点数
+	//maxPeers := oct.p2pServer.MaxPeers
+	//oct.handler.Start(maxPeers)
 	log.Info("oct 启动完成")
 }
 
@@ -192,12 +197,16 @@ func (oct *Octopus) close() {
 
 func New(oct *Octopus, cfg *octconfig.Config) (*Octopus, error) {
 
+	merger := consensus.NewMerger(oct.Blockchain.GetDB())
+
 	var (
 		backends []accounts.Backend
 		n, p     = accounts.StandardScryptN, accounts.StandardScryptP
 	)
 	backends = append(backends, accounts.NewKeyStore("keystore", n, p))
+
 	oct.config = cfg
+	oct.merger = merger
 	oct.accountManager = accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: true}, backends...)
 	oct.closeBloomHandler = make(chan struct{})
 	oct.txPool = blockchain.NewTxPool(blockchainconfig.DefaultTxPoolConfig, oct.Blockchain)
@@ -207,9 +216,25 @@ func New(oct *Octopus, cfg *octconfig.Config) (*Octopus, error) {
 	oct.miner = miner.New(oct, &cfg.Miner, oct.Blockchain.Config(), oct.Engine)
 
 	oct.APIBackend = &OctAPIBackend{true, true, oct}
-	//lo := oct.APIs()
-	//lo["personal"]
-	//stack.RegisterAPIs(oct.APIs())
+	// 允许下载程序在快速同步期间使用trie缓存余量
+	//cacheLimit := cacheConfig.TrieCleanLimit + cacheConfig.TrieDirtyLimit + cacheConfig.SnapshotLimit
+	checkpoint := cfg.Checkpoint
+	var err error
+	if oct.handler, err = newHandler(&handlerConfig{
+		Database: oct.Blockchain.GetDB(),
+		Chain:    oct.Blockchain,
+		TxPool:   oct.txPool,
+		Merger:   merger,
+		Network:  cfg.NetworkId,
+		Sync:     cfg.SyncMode,
+		//BloomCache:     uint64(cacheLimit),
+		EventMux:       oct.eventMux,
+		Checkpoint:     checkpoint,
+		RequiredBlocks: cfg.RequiredBlocks,
+	}); err != nil {
+		return nil, err
+	}
+
 	return oct, nil
 }
 

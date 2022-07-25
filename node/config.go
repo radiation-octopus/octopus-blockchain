@@ -425,7 +425,7 @@ func getKeyStoreDir(conf *Config) (string, bool, error) {
 	isEphemeral := false
 	if keydir == "" {
 		// 没有datadir。
-		keydir, err = os.MkdirTemp("", "keystore")
+		//456keydir, err = os.MkdirTemp("", "keystore")
 		isEphemeral = true
 	}
 

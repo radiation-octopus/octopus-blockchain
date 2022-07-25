@@ -26,6 +26,14 @@ type Database struct {
 	lock sync.RWMutex
 }
 
+func (db *Database) Compact(start []byte, limit []byte) error {
+	return nil
+}
+
+func (db *Database) Stat(property string) (string, error) {
+	return "", errors.New("unknown property")
+}
+
 //NewIterator在具有特定键前缀的数据库内容子集上创建一个二进制字母迭代器，从特定的初始键开始（如果不存在，则在其之后）。
 func (db *Database) NewIterator(prefix []byte, start []byte) typedb.Iterator {
 	db.lock.RLock()

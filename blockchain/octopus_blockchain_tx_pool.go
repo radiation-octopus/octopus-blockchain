@@ -122,6 +122,16 @@ type TxPool struct {
 	changesSinceReorg int // 一个计数器，显示在reorg之间我们执行了多少次下降。
 }
 
+//Has返回一个指示符，指示txpool是否使用给定哈希缓存了事务。
+func (pool *TxPool) Has(hash entity.Hash) bool {
+	return pool.all.Get(hash) != nil
+}
+
+//如果事务包含在池中，Get返回事务，否则返回nil。
+func (pool *TxPool) Get(hash entity.Hash) *block2.Transaction {
+	return pool.all.Get(hash)
+}
+
 // NewTxPool创建一个新的事务池来收集、排序和过滤网络中的入站事务。
 func NewTxPool(config blockchainconfig.TxPoolConfig, chain blockChainop) *TxPool {
 	// 清理输入，确保未设定易受影响的gas价格
@@ -178,7 +188,7 @@ func NewTxPool(config blockchainconfig.TxPoolConfig, chain blockChainop) *TxPool
 	return pool
 }
 
-// newTxLookup returns a new txLookup structure.
+// newTxLookup返回一个新的txLookup结构。
 func newTxLookup() *txLookup {
 	return &txLookup{
 		locals:  make(map[entity.Hash]*block2.Transaction),

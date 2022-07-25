@@ -21,8 +21,6 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"go/parser"
-	"go/token"
 	"io"
 	"log"
 	"os"
@@ -76,11 +74,12 @@ func RunGit(args ...string) string {
 
 // readGitFile returns content of file in .git directory.
 func readGitFile(file string) string {
-	content, err := os.ReadFile(path.Join(".git", file))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(content))
+	//456content, err := os.ReadFile(path.Join(".git", file))
+	//if err != nil {
+	//	return ""
+	//}
+	//return strings.TrimSpace(string(content))
+	return ""
 }
 
 // Render renders the given template file into outputFile.
@@ -176,23 +175,23 @@ func UploadSFTP(identityFile, host, dir string, files []string) error {
 // package paths.
 func FindMainPackages(dir string) []string {
 	var commands []string
-	cmds, err := os.ReadDir(dir)
-	if err != nil {
-		log.Fatal(err)
-	}
-	for _, cmd := range cmds {
-		pkgdir := filepath.Join(dir, cmd.Name())
-		pkgs, err := parser.ParseDir(token.NewFileSet(), pkgdir, nil, parser.PackageClauseOnly)
-		if err != nil {
-			log.Fatal(err)
-		}
-		for name := range pkgs {
-			if name == "main" {
-				path := "./" + filepath.ToSlash(pkgdir)
-				commands = append(commands, path)
-				break
-			}
-		}
-	}
+	//456cmds, err := os.ReadDir(dir)
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	//for _, cmd := range cmds {
+	//	pkgdir := filepath.Join(dir, cmd.Name())
+	//	pkgs, err := parser.ParseDir(token.NewFileSet(), pkgdir, nil, parser.PackageClauseOnly)
+	//	if err != nil {
+	//		log.Fatal(err)
+	//	}
+	//	for name := range pkgs {
+	//		if name == "main" {
+	//			path := "./" + filepath.ToSlash(pkgdir)
+	//			commands = append(commands, path)
+	//			break
+	//		}
+	//	}
+	//}
 	return commands
 }

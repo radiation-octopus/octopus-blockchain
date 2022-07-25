@@ -2,7 +2,9 @@ package vm
 
 import (
 	"errors"
+	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
+	"github.com/radiation-octopus/octopus-blockchain/entity/math"
 	"github.com/radiation-octopus/octopus-blockchain/log"
 	"hash"
 )
@@ -122,9 +124,9 @@ func (in *OVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	)
 
 	//最后关闭堆栈
-	//defer func() {
-	//	returnStack(stack)
-	//}()
+	defer func() {
+		returnStack(stack)
+	}()
 
 	contract.Input = input
 
@@ -135,42 +137,43 @@ func (in *OVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		operation := in.cfg.JumpTable[op]
 		cost = operation.constantGas // 用于跟踪
 		// 验证堆栈
-		//if sLen := stack.len(); sLen < operation.minStack {
-		//	return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.minStack}
-		//} else if sLen > operation.maxStack {
-		//	return nil, &ErrStackOverflow{stackLen: sLen, limit: operation.maxStack}
-		//}
+		if sLen := stack.len(); sLen < operation.minStack {
+			return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.minStack}
+		} else if sLen > operation.maxStack {
+			return nil, &ErrStackOverflow{stackLen: sLen, limit: operation.maxStack}
+		}
 		if !contract.UseGas(cost) {
 			return nil, errors.New("gas用完")
 		}
-		//if operation.dynamicGas != nil {
-		//	//所有具有动态内存使用率的操作也会有动态gas成本
-		//	var memorySize uint64
-		//	// 计算新的内存大小，并扩展内存以适应在评估动态gas部分之前需要进行的操作内存检查，
-		//	//检测计算溢出
-		//	if operation.memorySize != nil {
-		//		memSize, overflow := operation.memorySize(stack)
-		//		if overflow {
-		//			return nil, ErrGasUintOverflow
-		//		}
-		//		// 内存扩展为32字节的字。gas也以文字计算。
-		//		if memorySize, overflow = math.SafeMul(toWordSize(memSize), 32); overflow {
-		//			return nil, ErrGasUintOverflow
-		//		}
-		//	}
-		//	//消耗气体，如果没有足够的气体，则返回错误。显式设置成本，以便捕获状态延迟方法可以获得适当的成本
-		//	var dynamicCost uint64
-		//	dynamicCost, terr = operation.dynamicGas(in.evm, contract, stack, mem, memorySize)
-		//	cost += dynamicCost // for tracing
-		//	if terr != nil || !contract.UseGas(dynamicCost) {
-		//		return nil, ErrOutOfGas
-		//	}
-		//	if memorySize > 0 {
-		//		mem.Resize(memorySize)
-		//	}
-		//}
+		if operation.dynamicGas != nil {
+			//所有具有动态内存使用率的操作也会有动态gas成本
+			var memorySize uint64
+			// 计算新的内存大小，并扩展内存以适应在评估动态gas部分之前需要进行的操作内存检查，
+			//检测计算溢出
+			if operation.memorySize != nil {
+				memSize, overflow := operation.memorySize(stack)
+				if overflow {
+					return nil, ErrGasUintOverflow
+				}
+				// 内存扩展为32字节的字。gas也以文字计算。
+				if memorySize, overflow = math.SafeMul(toWordSize(memSize), 32); overflow {
+					return nil, ErrGasUintOverflow
+				}
+			}
+			//消耗气体，如果没有足够的气体，则返回错误。显式设置成本，以便捕获状态延迟方法可以获得适当的成本
+			var dynamicCost uint64
+			dynamicCost, err = operation.dynamicGas(in.ovm, contract, stack, mem, memorySize)
+			cost += dynamicCost // 用于跟踪
+			fmt.Println(err)
+			if err != nil || !contract.UseGas(dynamicCost) {
+				return nil, ErrOutOfGas
+			}
+			if memorySize > 0 {
+				mem.Resize(memorySize)
+			}
+		}
 		//if in.cfg.Debug {
-		//	in.cfg.Tracer.CaptureState(pc, op, gasCopy, cost, callContext, in.returnData, in.evm.depth, terr)
+		//	in.cfg.Tracer.CaptureState(pc, op, gasCopy, cost, callContext, in.returnData, in.ovm.depth, terr)
 		//	logged = true
 		//}
 		// 执行操作码
@@ -180,6 +183,9 @@ func (in *OVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		}
 		pc++
 	}
-
+	fmt.Println("zong:", err)
+	if err == errStopToken {
+		err = nil // clear stop token error
+	}
 	return res, err
 }

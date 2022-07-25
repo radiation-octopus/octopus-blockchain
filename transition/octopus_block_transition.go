@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/entity/hexutil"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
 	"github.com/radiation-octopus/octopus/utils"
@@ -144,13 +145,16 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	)
 
 	if contractCreation { //创建合约
-		//ret, _, st.gas, vmerr = st.evm.Create(sender, st.data, st.gas, st.value)
+		ret, _, st.gas, vmerr = st.ovm.Create(sender, st.data, st.gas, st.value)
 	} else { //事件
 		// 设置nonce
 		st.state.SetNonce(msg.From(), st.state.GetNonce(sender.Address())+1)
 		//调用合约
 		ret, st.gas, vmerr = st.ovm.Call(sender, st.to(), st.data, st.gas, st.value)
 	}
+	a := hexutil.Encode(ret)
+	fmt.Println(a)
+	//fmt.Println(hexutil.DecodeString(a))
 
 	return &ExecutionResult{
 		UsedGas:    st.gasUsed(),
@@ -200,16 +204,16 @@ func (st *StateTransition) buyGas() error {
 		balanceCheck = balanceCheck.Mul(balanceCheck, st.gasFeeCap)
 		balanceCheck.Add(balanceCheck, st.value) //所需余额
 	}
-	//if have, want := st.state.GetBalance(st.msg.From()), balanceCheck; have.Cmp(want) < 0 {
-	//	return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.msg.From().Hex(), have, want)
-	//}
+	if have, want := st.state.GetBalance(st.msg.From()), balanceCheck; have.Cmp(want) < 0 {
+		return fmt.Errorf("%w: address %v have %v want %v", terr.ErrInsufficientFunds, st.msg.From().Hex(), have, want)
+	}
 	if err := st.gp.SubGas(st.msg.Gas()); err != nil {
 		return err
 	}
 	st.gas += st.msg.Gas()
 
 	st.initialGas = st.msg.Gas()
-	//st.state.SubBalance(st.msg.From(), mgval)
+	st.state.SubBalance(st.msg.From(), mgval)
 	return nil
 }
 

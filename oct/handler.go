@@ -1,19 +1,3 @@
-// Copyright 2015 The go-ethereum Authors
-// This file is part of the go-ethereum library.
-//
-// The go-ethereum library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The go-ethereum library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
-
 package oct
 
 import (
@@ -42,62 +26,55 @@ import (
 )
 
 const (
-	// txChanSize is the size of channel listening to NewTxsEvent.
-	// The number is referenced from the size of tx pool.
+	// txChanSize是侦听NewTxsEvent的通道的大小。该数字参考tx池的大小。
 	txChanSize = 4096
 )
 
 var (
-	syncChallengeTimeout = 15 * time.Second // Time allowance for a node to reply to the sync progress challenge
+	syncChallengeTimeout = 15 * time.Second // 节点回复同步进度质询的时间余量
 )
 
-// txPool defines the methods needed from a transaction pool implementation to
-// support all the operations needed by the Ethereum chain protocols.
+// txPool定义了事务池实现所需的方法，以支持辐射章鱼链协议所需的所有操作。
 type txPool interface {
-	// Has returns an indicator whether txpool has a transaction
-	// cached with the given hash.
+	// Has返回一个指示符，指示txpool是否使用给定哈希缓存了事务。
 	Has(hash entity.Hash) bool
 
-	// Get retrieves the transaction from local txpool with given
-	// tx hash.
+	// Get使用给定的tx哈希从本地txpool检索事务。
 	Get(hash entity.Hash) *block.Transaction
 
-	// AddRemotes should add the given transactions to the pool.
+	// AddRemotes应该将给定的事务添加到池中。
 	AddRemotes([]*block.Transaction) []error
 
-	// Pending should return pending transactions.
-	// The slice should be modifiable by the caller.
+	// 挂起应返回挂起的事务。调用方应该可以修改切片。
 	Pending(enforceTips bool) map[entity.Address]block.Transactions
 
-	// SubscribeNewTxsEvent should return an event subscription of
-	// NewTxsEvent and send events to the given channel.
+	// SubscribeNewTxsEvent应返回NewTxsEvent的事件订阅，并将事件发送到给定通道。
 	SubscribeNewTxsEvent(chan<- event.NewTxsEvent) event.Subscription
 }
 
-// handlerConfig is the collection of initialization parameters to create a full
-// node network handler.
+// handlerConfig是初始化参数的集合，用于创建完整的节点网络处理程序。
 type handlerConfig struct {
-	Database       typedb.Database           // Database for direct sync insertions
-	Chain          *blockchain.BlockChain    // Blockchain to serve data from
-	TxPool         txPool                    // Transaction pool to propagate from
-	Merger         *consensus.Merger         // The manager for eth1/2 transition
-	Network        uint64                    // Network identifier to adfvertise
-	Sync           downloader.SyncMode       // Whether to snap or full sync
-	BloomCache     uint64                    // Megabytes to alloc for snap sync bloom
-	EventMux       *event.TypeMux            // Legacy event mux, deprecate for `feed`
-	Checkpoint     *params.TrustedCheckpoint // Hard coded checkpoint for sync challenges
-	RequiredBlocks map[uint64]entity.Hash    // Hard coded map of required block hashes for sync challenges
+	Database       typedb.Database           // 用于直接同步插入的数据库
+	Chain          *blockchain.BlockChain    // 提供数据的区块链
+	TxPool         txPool                    // 要从中传播的事务池
+	Merger         *consensus.Merger         // oct1/2转换经理
+	Network        uint64                    // adfvertise的网络标识符
+	Sync           downloader.SyncMode       // 是快照还是完全同步
+	BloomCache     uint64                    // 将兆字节分配给snap sync bloom
+	EventMux       *event.TypeMux            // 旧式事件多路复用器，不推荐用于“feed”`
+	Checkpoint     *params.TrustedCheckpoint // 用于同步挑战的硬编码检查点
+	RequiredBlocks map[uint64]entity.Hash    // 同步挑战所需块哈希的硬编码映射
 }
 
 type handler struct {
 	networkID  uint64
-	forkFilter forkid.Filter // Fork ID filter, constant across the lifetime of the node
+	forkFilter forkid.Filter // Fork ID filter，在节点生存期内保持不变
 
-	snapSync  uint32 // Flag whether snap sync is enabled (gets disabled if we already have blocks)
-	acceptTxs uint32 // Flag whether we're considered synchronised (enables transaction processing)
+	snapSync  uint32 // 标记是否启用快照同步（如果我们已经有块，则禁用）
+	acceptTxs uint32 // 标记我们是否被视为同步（启用事务处理）
 
-	checkpointNumber uint64      // Block number for the sync progress validator to cross reference
-	checkpointHash   entity.Hash // Block hash for the sync progress validator to cross reference
+	checkpointNumber uint64      // 同步进度验证器交叉引用的块编号
+	checkpointHash   entity.Hash // 阻止同步进度验证程序交叉引用的哈希
 
 	database typedb.Database
 	txpool   txPool
@@ -117,7 +94,7 @@ type handler struct {
 
 	requiredBlocks map[uint64]entity.Hash
 
-	// channels for fetcher, syncer, txsyncLoop
+	// 取数器、同步器、txsyncLoop的通道
 	quitSync chan struct{}
 
 	chainSync *chainSyncer
@@ -125,11 +102,11 @@ type handler struct {
 	peerWG    sync.WaitGroup
 }
 
-// newHandler returns a handler for all Ethereum chain management protocol.
+// newHandler返回所有辐射章鱼链管理协议的处理程序。
 func newHandler(config *handlerConfig) (*handler, error) {
-	// Create the protocol manager with the base fields
+	// 使用基本字段创建协议管理器
 	if config.EventMux == nil {
-		config.EventMux = new(event.TypeMux) // Nicety initialization for tests
+		config.EventMux = new(event.TypeMux) // 测试的精确初始化
 	}
 	h := &handler{
 		networkID:      config.Network,
@@ -144,14 +121,11 @@ func newHandler(config *handlerConfig) (*handler, error) {
 		quitSync:       make(chan struct{}),
 	}
 	if config.Sync == downloader.FullSync {
-		// The database seems empty as the current block is the genesis. Yet the snap
-		// block is ahead, so snap sync was enabled for this node at a certain point.
-		// The scenarios where this can happen is
-		// * if the user manually (or via a bad block) rolled back a snap sync node
-		//   below the sync point.
-		// * the last snap sync is not finished while user specifies a full sync this
-		//   time. But we don't have any recent state for full sync.
-		// In these cases however it's safe to reenable snap sync.
+		// 数据库似乎是空的，因为当前块是genesis。
+		//然而，捕捉块在前面，因此在某个点为该节点启用了捕捉同步。
+		//如果用户手动（或通过坏块）将快照同步节点回滚到同步点下方，则可能发生这种情况。
+		//*上次快照同步未完成，而用户这次指定了完全同步。但我们没有任何最近的状态进行完全同步。
+		//然而，在这些情况下，重新启用snap sync是安全的。
 		fullBlock := h.chain.CurrentBlock()
 		if fullBlock.NumberU64() == 0 {
 			h.snapSync = uint32(1)
@@ -159,55 +133,46 @@ func newHandler(config *handlerConfig) (*handler, error) {
 		}
 	} else {
 		if h.chain.CurrentBlock().NumberU64() > 0 {
-			// Print warning log if database is not empty to run snap sync.
+			// 如果数据库不为空，则打印警告日志以运行快照同步。
 			log.Warn("Switch sync mode from snap sync to full sync")
 		} else {
-			// If snap sync was requested and our database is empty, grant it
+			// 如果请求了快照同步，而我们的数据库为空，请授予它
 			h.snapSync = uint32(1)
 		}
 	}
-	// If we have trusted checkpoints, enforce them on the chain
+	// 如果我们有可信的检查点，就在链上强制执行它们
 	if config.Checkpoint != nil {
 		h.checkpointNumber = (config.Checkpoint.SectionIndex+1)*entity.CHTFrequency - 1
 		h.checkpointHash = config.Checkpoint.SectionHead
 	}
-	// If sync succeeds, pass a callback to potentially disable snap sync mode
-	// and enable transaction propagation.
+	// 如果同步成功，则传递回调以潜在地禁用快照同步模式并启用事务传播。
 	success := func() {
-		// If we were running snap sync and it finished, disable doing another
-		// round on next sync cycle
+		// 如果我们正在运行snap sync并且它已完成，请禁用在下一个同步周期执行另一轮
 		if atomic.LoadUint32(&h.snapSync) == 1 {
 			log.Info("Snap sync complete, auto disabling")
 			atomic.StoreUint32(&h.snapSync, 0)
 		}
-		// If we've successfully finished a sync cycle and passed any required
-		// checkpoint, enable accepting transactions from the network
+		// 如果我们成功完成了同步周期并通过了任何所需的检查点，则启用从网络接受事务
 		head := h.chain.CurrentBlock()
 		if head.NumberU64() >= h.checkpointNumber {
-			// Checkpoint passed, sanity check the timestamp to have a fallback mechanism
-			// for non-checkpointed (number = 0) private networks.
+			// 检查点已通过，健全性检查时间戳，以对非检查点（数字=0）专用网络具有回退机制。
 			if head.Time() >= uint64(time.Now().AddDate(0, -1, 0).Unix()) {
 				atomic.StoreUint32(&h.acceptTxs, 1)
 			}
 		}
 	}
-	// Construct the downloader (long sync) and its backing state bloom if snap
-	// sync is requested. The downloader is responsible for deallocating the state
-	// bloom when it's done.
+	// 如果请求快照同步，则构建下载程序（长同步）及其备份状态bloom。下载程序负责在完成后释放状态bloom。
 	h.downloader = downloader.New(h.checkpointNumber, config.Database, h.eventMux, h.chain, nil, h.removePeer, success)
 
-	// Construct the fetcher (short sync)
+	// 构造提取程序（短同步）
 	validator := func(header *block.Header) error {
-		// All the block fetcher activities should be disabled
-		// after the transition. Print the warning log.
+		// 转换后，应禁用所有块提取程序活动。打印警告日志。
 		if h.merger.PoSFinalized() {
 			log.Warn("Unexpected validation activity", "hash", header.Hash(), "number", header.Number)
 			return errors.New("unexpected behavior after transition")
 		}
-		// Reject all the PoS style headers in the first place. No matter
-		// the chain has finished the transition or not, the PoS headers
-		// should only come from the trusted consensus layer instead of
-		// p2p network.
+		// 首先拒绝所有PoS样式标题。
+		//无论链是否完成了转换，PoS头都应该只来自可信共识层，而不是p2p网络。
 		if beacon, ok := h.chain.Engine().(*beacon.Beacon); ok {
 			if beacon.IsPoSHeader(header) {
 				return errors.New("unexpected post-merge header")
@@ -219,8 +184,7 @@ func newHandler(config *handlerConfig) (*handler, error) {
 		return h.chain.CurrentBlock().NumberU64()
 	}
 	inserter := func(blocks block.Blocks) (int, error) {
-		// All the block fetcher activities should be disabled
-		// after the transition. Print the warning log.
+		// 转换后，应禁用所有块提取程序活动。打印警告日志。
 		if h.merger.PoSFinalized() {
 			var ctx []interface{}
 			ctx = append(ctx, "blocks", len(blocks))
@@ -233,21 +197,17 @@ func newHandler(config *handlerConfig) (*handler, error) {
 			log.Warn("Unexpected insertion activity", ctx...)
 			return 0, errors.New("unexpected behavior after transition")
 		}
-		// If sync hasn't reached the checkpoint yet, deny importing weird blocks.
-		//
-		// Ideally we would also compare the head block's timestamp and similarly reject
-		// the propagated block if the head is too old. Unfortunately there is a corner
-		// case when starting new networks, where the genesis might be ancient (0 unix)
-		// which would prevent full nodes from accepting it.
+		//如果同步尚未到达检查点，请拒绝导入奇怪的块。
+		//理想情况下，我们还将比较头部块的时间戳，如果头部太旧，则类似地拒绝传播的块。
+		//不幸的是，在启动新网络时出现了一个极端情况，即起源可能很古老（0 unix），这将阻止整个节点接受它。
 		if h.chain.CurrentBlock().NumberU64() < h.checkpointNumber {
 			log.Warn("Unsynced yet, discarded propagated block", "number", blocks[0].Number(), "hash", blocks[0].Hash())
 			return 0, nil
 		}
-		// If snap sync is running, deny importing weird blocks. This is a problematic
-		// clause when starting up a new network, because snap-syncing miners might not
-		// accept each others' blocks until a restart. Unfortunately we haven't figured
-		// out a way yet where nodes can decide unilaterally whether the network is new
-		// or not. This should be fixed if we figure out a solution.
+		// 如果snap sync正在运行，请拒绝导入奇怪的块。
+		//在启动新网络时，这是一个有问题的条款，因为快照同步矿工在重新启动之前可能不会接受彼此的块。
+		//不幸的是，我们还没有找到一种方法，节点可以单方面决定网络是否是新的。
+		//如果我们找到一个解决方案，这个问题应该得到解决。
 		if atomic.LoadUint32(&h.snapSync) == 1 {
 			log.Warn("Snap syncing, discarded propagated block", "number", blocks[0].Number(), "hash", blocks[0].Hash())
 			return 0, nil
@@ -277,7 +237,7 @@ func newHandler(config *handlerConfig) (*handler, error) {
 		}
 		n, err := h.chain.InsertChain(blocks)
 		if err == nil {
-			atomic.StoreUint32(&h.acceptTxs, 1) // Mark initial sync done on any fetcher import
+			atomic.StoreUint32(&h.acceptTxs, 1) // 在任何抓取器导入时标记初始同步完成
 		}
 		return n, err
 	}
@@ -295,24 +255,21 @@ func newHandler(config *handlerConfig) (*handler, error) {
 	return h, nil
 }
 
-// runEthPeer registers an eth peer into the joint eth/snap peerset, adds it to
-// various subsystems and starts handling messages.
-func (h *handler) runEthPeer(peer *eth.Peer, handler eth.Handler) error {
-	// If the peer has a `snap` extension, wait for it to connect so we can have
-	// a uniform initialization/teardown mechanism
+// runOctPeer将eth对等注册到联合eth/snap对等集中，将其添加到各个子系统并开始处理消息。
+func (h *handler) runOctPeer(peer *eth.Peer, handler eth.Handler) error {
+	// 如果对等端有一个“snap”扩展，等待它连接，这样我们就可以有一个统一的初始化/拆卸机制
 	snap, err := h.peers.waitSnapExtension(peer)
 	if err != nil {
 		peer.Log().Error("Snapshot extension barrier failed", "err", err)
 		return err
 	}
-	// TODO(karalabe): Not sure why this is needed
 	if !h.chainSync.handlePeerEvent(peer) {
 		return p2p.DiscQuitting
 	}
 	h.peerWG.Add(1)
 	defer h.peerWG.Done()
 
-	// Execute the Ethereum handshake
+	// 执行辐射章鱼握手
 	var (
 		genesis = h.chain.Genesis()
 		head    = h.chain.CurrentHeader()
@@ -325,18 +282,17 @@ func (h *handler) runEthPeer(peer *eth.Peer, handler eth.Handler) error {
 		peer.Log().Debug("Ethereum handshake failed", "err", err)
 		return err
 	}
-	reject := false // reserved peer slots
+	reject := false // 保留的对等插槽
 	if atomic.LoadUint32(&h.snapSync) == 1 {
 		if snap == nil {
-			// If we are running snap-sync, we want to reserve roughly half the peer
-			// slots for peers supporting the snap protocol.
-			// The logic here is; we only allow up to 5 more non-snap peers than snap-peers.
+			// 如果我们运行snap sync，我们希望为支持snap协议的对等机保留大约一半的对等机插槽。
+			//这里的逻辑是；我们只允许最多5个非snap对等点比snap对等点多。
 			if all, snp := h.peers.len(), h.peers.snapLen(); all-snp > snp+5 {
 				reject = true
 			}
 		}
 	}
-	// Ignore maxPeers if this is a trusted peer
+	// 如果这是受信任的对等点，则忽略maxPeers
 	if !peer.Peer.Info().Network.Trusted {
 		if reject || h.peers.len() >= h.maxPeers {
 			return p2p.DiscTooManyPeers
@@ -344,7 +300,7 @@ func (h *handler) runEthPeer(peer *eth.Peer, handler eth.Handler) error {
 	}
 	peer.Log().Debug("Ethereum peer connected", "name", peer.Name())
 
-	// Register the peer locally
+	// 在本地注册对等方
 	if err := h.peers.registerPeer(peer, snap); err != nil {
 		peer.Log().Error("Ethereum peer registration failed", "err", err)
 		return err
@@ -355,7 +311,7 @@ func (h *handler) runEthPeer(peer *eth.Peer, handler eth.Handler) error {
 	if p == nil {
 		return errors.New("peer dropped during handling")
 	}
-	// Register the peer in the downloader. If the downloader considers it banned, we disconnect
+	// 在下载程序中注册对等程序。如果下载程序认为它被禁止，我们将断开连接
 	if err := h.downloader.RegisterPeer(peer.ID(), peer.Version(), peer); err != nil {
 		peer.Log().Error("Failed to register peer in eth syncer", "err", err)
 		return err
@@ -368,22 +324,21 @@ func (h *handler) runEthPeer(peer *eth.Peer, handler eth.Handler) error {
 	}
 	h.chainSync.handlePeerEvent(peer)
 
-	// Propagate existing transactions. new transactions appearing
-	// after this will be sent via broadcasts.
+	// 传播现有事务。之后出现的新事务将通过广播发送。
 	h.syncTransactions(peer)
 
-	// Create a notification channel for pending requests if the peer goes down
+	// 如果对等方宕机，则为挂起的请求创建通知通道
 	dead := make(chan struct{})
 	defer close(dead)
 
-	// If we have a trusted CHT, reject all peers below that (avoid fast sync eclipse)
+	// 如果我们有一个受信任的CHT，拒绝低于该值的所有对等方（避免快速同步eclipse）
 	if h.checkpointHash != (entity.Hash{}) {
-		// Request the peer's checkpoint header for chain height/weight validation
+		// 请求对等方的检查点标头进行链高度/重量验证
 		resCh := make(chan *eth.Response)
 		if _, err := peer.RequestHeadersByNumber(h.checkpointNumber, 1, 0, false, resCh); err != nil {
 			return err
 		}
-		// Start a timer to disconnect if the peer doesn't reply in time
+		// 如果对方没有及时回复，启动计时器断开连接
 		go func() {
 			timeout := time.NewTimer(syncChallengeTimeout)
 			defer timeout.Stop()
@@ -392,9 +347,8 @@ func (h *handler) runEthPeer(peer *eth.Peer, handler eth.Handler) error {
 			case res := <-resCh:
 				headers := ([]*block.Header)(*res.Res.(*eth.BlockHeadersPacket))
 				if len(headers) == 0 {
-					// If we're doing a snap sync, we must enforce the checkpoint
-					// block to avoid eclipse attacks. Unsynced nodes are welcome
-					// to connect after we're done joining the network.
+					// 如果我们正在进行快照同步，我们必须强制执行检查点块以避免eclipse攻击。
+					//在我们加入网络后，欢迎非同步节点进行连接。
 					if atomic.LoadUint32(&h.snapSync) == 1 {
 						peer.Log().Warn("Dropping unsynced node during sync", "addr", peer.RemoteAddr(), "type", peer.Name())
 						res.Done <- errors.New("unsynced node cannot serve sync")
@@ -403,7 +357,7 @@ func (h *handler) runEthPeer(peer *eth.Peer, handler eth.Handler) error {
 					res.Done <- nil
 					return
 				}
-				// Validate the header and either drop the peer or continue
+				// 验证标头并删除对等项或继续
 				if len(headers) > 1 {
 					res.Done <- errors.New("too many headers in checkpoint response")
 					return
@@ -419,11 +373,11 @@ func (h *handler) runEthPeer(peer *eth.Peer, handler eth.Handler) error {
 				h.removePeer(peer.ID())
 
 			case <-dead:
-				// Peer handler terminated, abort all goroutines
+				// 对等处理程序终止，中止所有goroutine
 			}
 		}()
 	}
-	// If we have any explicit peer required block hashes, request them
+	// 如果我们有任何明确的对等请求块哈希，请请求它们
 	for number, hash := range h.requiredBlocks {
 		resCh := make(chan *eth.Response)
 		if _, err := peer.RequestHeadersByNumber(number, 1, 0, false, resCh); err != nil {
@@ -437,12 +391,11 @@ func (h *handler) runEthPeer(peer *eth.Peer, handler eth.Handler) error {
 			case res := <-resCh:
 				headers := ([]*block.Header)(*res.Res.(*eth.BlockHeadersPacket))
 				if len(headers) == 0 {
-					// Required blocks are allowed to be missing if the remote
-					// node is not yet synced
+					// 如果远程节点尚未同步，则允许缺少所需的块
 					res.Done <- nil
 					return
 				}
-				// Validate the header and either drop the peer or continue
+				// 验证标头并删除对等项或继续
 				if len(headers) > 1 {
 					res.Done <- errors.New("too many headers in required block response")
 					return
@@ -460,14 +413,12 @@ func (h *handler) runEthPeer(peer *eth.Peer, handler eth.Handler) error {
 			}
 		}(number, hash)
 	}
-	// Handle incoming messages until the connection is torn down
+	// 处理传入消息，直到连接断开
 	return handler(peer)
 }
 
-// runSnapExtension registers a `snap` peer into the joint eth/snap peerset and
-// starts handling inbound messages. As `snap` is only a satellite protocol to
-// `eth`, all subsystem registrations and lifecycle management will be done by
-// the main `eth` handler to prevent strange races.
+// runSnapExtension将“snap”对等点注册到联合eth/snap对等点集中，并开始处理入站消息。
+//由于“snap”只是“eth”的卫星协议，所有子系统注册和生命周期管理将由“eth”主处理程序完成，以防止奇怪的种族。
 func (h *handler) runSnapExtension(peer *snap.Peer, handler snap.Handler) error {
 	h.peerWG.Add(1)
 	defer h.peerWG.Done()
@@ -479,7 +430,7 @@ func (h *handler) runSnapExtension(peer *snap.Peer, handler snap.Handler) error 
 	return handler(peer)
 }
 
-// removePeer requests disconnection of a peer.
+// removePeer请求断开对等连接。
 func (h *handler) removePeer(id string) {
 	peer := h.peers.peer(id)
 	if peer != nil {
@@ -487,26 +438,26 @@ func (h *handler) removePeer(id string) {
 	}
 }
 
-// unregisterPeer removes a peer from the downloader, fetchers and main peer set.
+// unregisterPeer从下载程序、抓取程序和主对等集中删除对等。
 func (h *handler) unregisterPeer(id string) {
-	// Create a custom logger to avoid printing the entire id
+	// 创建自定义记录器以避免打印整个id
 	var logger log.Logger
 	if len(id) < 16 {
-		// Tests use short IDs, don't choke on them
+		// 测试使用短ID，不要被它们卡住
 		logger = log.New("peer", id)
 	} else {
 		logger = log.New("peer", id[:8])
 	}
-	// Abort if the peer does not exist
+	// 如果对等方不存在，则中止
 	peer := h.peers.peer(id)
 	if peer == nil {
 		logger.Error("Ethereum peer removal failed", "err", errPeerNotRegistered)
 		return
 	}
-	// Remove the `eth` peer if it exists
+	// 删除“oct”对等端（如果存在）
 	logger.Debug("Removing Ethereum peer", "snap", peer.snapExt != nil)
 
-	// Remove the `snap` extension if it exists
+	// 删除“snap”扩展名（如果存在）
 	if peer.snapExt != nil {
 		h.downloader.SnapSyncer.Unregister(id)
 	}
@@ -521,61 +472,56 @@ func (h *handler) unregisterPeer(id string) {
 func (h *handler) Start(maxPeers int) {
 	h.maxPeers = maxPeers
 
-	// broadcast transactions
+	// 广播事务
 	h.wg.Add(1)
 	h.txsCh = make(chan event.NewTxsEvent, txChanSize)
 	h.txsSub = h.txpool.SubscribeNewTxsEvent(h.txsCh)
 	go h.txBroadcastLoop()
 
-	// broadcast mined blocks
+	// 广播开采区块
 	h.wg.Add(1)
 	h.minedBlockSub = h.eventMux.Subscribe(event.NewMinedBlockEvent{})
 	go h.minedBroadcastLoop()
 
-	// start sync handlers
+	// 启动同步处理程序
 	h.wg.Add(1)
 	go h.chainSync.loop()
 }
 
 func (h *handler) Stop() {
-	h.txsSub.Unsubscribe()        // quits txBroadcastLoop
-	h.minedBlockSub.Unsubscribe() // quits blockBroadcastLoop
+	h.txsSub.Unsubscribe()        // 退出txBroadcastLoop
+	h.minedBlockSub.Unsubscribe() // 退出BlockBroadcasting循环
 
-	// Quit chainSync and txsync64.
-	// After this is done, no new peers will be accepted.
+	// 退出chainSync和txsync64。完成后，不会接受新的对等点。
 	close(h.quitSync)
 	h.wg.Wait()
 
-	// Disconnect existing sessions.
-	// This also closes the gate for any new registrations on the peer set.
-	// sessions which are already established but not added to h.peers yet
-	// will exit when they try to register.
+	// 断开现有会话的连接。这也关闭了对等集上任何新注册的大门。
+	//已建立但未添加到h.peers的会话将在尝试注册时退出。
 	h.peers.close()
 	h.peerWG.Wait()
 
 	log.Info("Ethereum protocol stopped")
 }
 
-// BroadcastBlock will either propagate a block to a subset of its peers, or
-// will only announce its availability (depending what's requested).
+// BroadcastBlock要么将一个块传播到其对等节点的子集，要么仅宣布其可用性（取决于请求的内容）。
 func (h *handler) BroadcastBlock(block *block.Block, propagate bool) {
-	// Disable the block propagation if the chain has already entered the PoS
-	// stage. The block propagation is delegated to the consensus layer.
+	// 如果链已进入PoS阶段，则禁用块传播。块传播被委托给共识层。
 	if h.merger.PoSFinalized() {
 		return
 	}
-	// Disable the block propagation if it's the post-merge block.
-	//if beacon, ok := h.chain.Engine().(*beacon.Beacon); ok {
-	//	if beacon.IsPoSHeader(block.Header()) {
-	//		return
-	//	}
-	//}
+	// 如果是合并后块，则禁用块传播。
+	if beacon, ok := h.chain.Engine().(*beacon.Beacon); ok {
+		if beacon.IsPoSHeader(block.Header()) {
+			return
+		}
+	}
 	hash := block.Hash()
 	peers := h.peers.peersWithoutBlock(hash)
 
-	// If propagation is requested, send to a subset of the peer
+	// 如果请求传播，则发送到对等节点的子集
 	if propagate {
-		// Calculate the TD of the block (it's not imported yet, so block.Td is not valid)
+		// 计算块的TD（尚未导入，因此块。TD无效）
 		var td *big.Int
 		if parent := h.chain.GetBlock(block.ParentHash(), block.NumberU64()-1); parent != nil {
 			td = new(big.Int).Add(block.Difficulty(), h.chain.GetTd(block.ParentHash(), block.NumberU64()-1))
@@ -583,7 +529,7 @@ func (h *handler) BroadcastBlock(block *block.Block, propagate bool) {
 			log.Error("Propagating dangling block", "number", block.Number(), "hash", hash)
 			return
 		}
-		// Send the block to a subset of our peers
+		// 将块发送给我们的同龄人的子集
 		transfer := peers[:int(math.Sqrt(float64(len(peers))))]
 		for _, peer := range transfer {
 			peer.AsyncSendNewBlock(block, td)
@@ -591,7 +537,7 @@ func (h *handler) BroadcastBlock(block *block.Block, propagate bool) {
 		log.Trace("Propagated block", "hash", hash, "recipients", len(transfer), "duration", entity.PrettyDuration(time.Since(block.ReceivedAt)))
 		return
 	}
-	// Otherwise if the block is indeed in out own chain, announce it
+	// 否则，如果该块确实在自己的链中，则宣布它
 	if h.chain.HasBlock(hash, block.NumberU64()) {
 		for _, peer := range peers {
 			peer.AsyncSendNewBlockHash(block)
@@ -600,30 +546,29 @@ func (h *handler) BroadcastBlock(block *block.Block, propagate bool) {
 	}
 }
 
-// BroadcastTransactions will propagate a batch of transactions
-// - To a square root of all peers
-// - And, separately, as announcements to all peers which are not known to
-// already have the given transaction.
+// BroadcastTransactions将传播一批事务
+//-到所有对等方的平方根
+//-并且，分别作为通知发送给所有已知尚未拥有给定交易的对等方。
 func (h *handler) BroadcastTransactions(txs block.Transactions) {
 	var (
-		annoCount   int // Count of announcements made
+		annoCount   int // 发布的公告数
 		annoPeers   int
-		directCount int // Count of the txs sent directly to peers
-		directPeers int // Count of the peers that were sent transactions directly
+		directCount int // 直接发送给对等方的TX计数
+		directPeers int // 直接发送事务的对等方计数
 
-		txset = make(map[*ethPeer][]entity.Hash) // Set peer->hash to transfer directly
-		annos = make(map[*ethPeer][]entity.Hash) // Set peer->hash to announce
+		txset = make(map[*ethPeer][]entity.Hash) // 将对等->哈希设置为直接传输
+		annos = make(map[*ethPeer][]entity.Hash) // 将对等->哈希设置为通告
 
 	)
-	// Broadcast transactions to a batch of peers not knowing about it
+	// 将事务广播给一批不知道它的对等方
 	for _, tx := range txs {
 		peers := h.peers.peersWithoutTransaction(tx.Hash())
-		// Send the tx unconditionally to a subset of our peers
+		// 无条件地将tx发送给我们的对等方的子集
 		numDirect := int(math.Sqrt(float64(len(peers))))
 		for _, peer := range peers[:numDirect] {
 			txset[peer] = append(txset[peer], tx.Hash())
 		}
-		// For the remaining peers, send announcement only
+		// 对于其余对等方，仅发送公告
 		for _, peer := range peers[numDirect:] {
 			annos[peer] = append(annos[peer], tx.Hash())
 		}
@@ -643,19 +588,19 @@ func (h *handler) BroadcastTransactions(txs block.Transactions) {
 		"tx packs", directPeers, "broadcast txs", directCount)
 }
 
-// minedBroadcastLoop sends mined blocks to connected peers.
+// minedBroadcastLoop将挖掘出的块发送给连接的对等方。
 func (h *handler) minedBroadcastLoop() {
 	defer h.wg.Done()
 
 	for obj := range h.minedBlockSub.Chan() {
 		if ev, ok := obj.Data.(event.NewMinedBlockEvent); ok {
-			h.BroadcastBlock(ev.Block, true)  // First propagate block to peers
-			h.BroadcastBlock(ev.Block, false) // Only then announce to the rest
+			h.BroadcastBlock(ev.Block, true)  // 首先将块传播到对等点
+			h.BroadcastBlock(ev.Block, false) // 然后才向其他人宣布
 		}
 	}
 }
 
-// txBroadcastLoop announces new transactions to connected peers.
+// txBroadcastLoop向连接的对等方宣布新的交易。
 func (h *handler) txBroadcastLoop() {
 	defer h.wg.Done()
 	for {

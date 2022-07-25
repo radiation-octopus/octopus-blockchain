@@ -142,7 +142,7 @@ const (
 	RefundQuotient        uint64 = 2
 	RefundQuotientEIP3529 uint64 = 5
 
-	cao    = 1
+	Cao    = 1
 	Gcao   = 1e9
 	Octcao = 1e18
 )
