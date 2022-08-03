@@ -127,7 +127,7 @@ func VerifyProof(rootHash entity.Hash, key []byte, proofDb typedb.KeyValueReader
 	}
 }
 
-// proofToPath converts a merkle proof to trie node path. The main purpose of
+// proofToPath converts a merkle proof to trie node path. The nodeentity purpose of
 // this function is recovering a node path from the merkle proof stream. All
 // necessary nodes will be resolved and leave the remaining as hashnode.
 //

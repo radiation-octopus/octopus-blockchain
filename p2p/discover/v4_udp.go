@@ -296,13 +296,11 @@ func (t *UDPv4) newLookup(ctx context.Context, targetKey encPubkey) *lookup {
 	return it
 }
 
-// findnode sends a findnode request to the given node and waits until
-// the node has sent up to k neighbors.
+// findnode向给定节点发送FindNodes请求，并等待该节点发送多达k个邻居。
 func (t *UDPv4) findnode(toid enode.ID, toaddr *net.UDPAddr, target v4wire.Pubkey) ([]*node, error) {
 	t.ensureBond(toid, toaddr)
 
-	// Add a matcher for 'neighbours' replies to the pending reply queue. The matcher is
-	// active until enough nodes have been received.
+	//为“邻居”的回复添加一个匹配器到挂起的回复队列。匹配器处于活动状态，直到收到足够的节点。
 	nodes := make([]*node, 0, bucketSize)
 	nreceived := 0
 	rm := t.pending(toid, toaddr.IP, v4wire.NeighborsPacket, func(r v4wire.Packet) (matched bool, requestDone bool) {
@@ -322,11 +320,9 @@ func (t *UDPv4) findnode(toid enode.ID, toaddr *net.UDPAddr, target v4wire.Pubke
 		Target:     target,
 		Expiration: uint64(time.Now().Add(expiration).Unix()),
 	})
-	// Ensure that callers don't see a timeout if the node actually responded. Since
-	// findnode can receive more than one neighbors response, the reply matcher will be
-	// active until the remote node sends enough nodes. If the remote end doesn't have
-	// enough nodes the reply matcher will time out waiting for the second reply, but
-	// there's no need for an error in that case.
+	// 如果节点实际响应，请确保调用者不会看到超时。
+	//由于findnode可以接收多个邻居响应，因此在远程节点发送足够多的节点之前，回复匹配器将处于活动状态。
+	//如果远程端没有足够的节点，回复匹配器将超时等待第二个回复，但在这种情况下不需要出错。
 	err := <-rm.errc
 	if errors.Is(err, errTimeout) && rm.reply != nil {
 		err = nil
@@ -375,8 +371,7 @@ func (t *UDPv4) RequestENR(n *enode.Node) (*enode.Node, error) {
 	return respN, nil
 }
 
-// pending adds a reply matcher to the pending reply queue.
-// see the documentation of type replyMatcher for a detailed explanation.
+// 挂起将应答匹配器添加到挂起应答队列。
 func (t *UDPv4) pending(id enode.ID, ip net.IP, ptype byte, callback replyMatchFunc) *replyMatcher {
 	ch := make(chan error, 1)
 	p := &replyMatcher{from: id, ip: ip, ptype: ptype, callback: callback, errc: ch}
@@ -389,8 +384,7 @@ func (t *UDPv4) pending(id enode.ID, ip net.IP, ptype byte, callback replyMatchF
 	return p
 }
 
-// handleReply dispatches a reply packet, invoking reply matchers. It returns
-// whether any matcher considered the packet acceptable.
+// handleReply发送一个回复包，调用回复匹配器。它返回是否有匹配器认为数据包是可接受的。
 func (t *UDPv4) handleReply(from enode.ID, fromIP net.IP, req v4wire.Packet) bool {
 	matched := make(chan bool, 1)
 	select {
@@ -510,7 +504,7 @@ func (t *UDPv4) write(toaddr *net.UDPAddr, toid enode.ID, what string, packet []
 	return err
 }
 
-// readLoop runs in its own goroutine. it handles incoming UDP packets.
+// readLoop在其自己的goroutine中运行。它处理传入的UDP数据包。
 func (t *UDPv4) readLoop(unhandled chan<- ReadPacket) {
 	defer t.wg.Done()
 	if unhandled != nil {

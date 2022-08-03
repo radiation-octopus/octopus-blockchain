@@ -171,7 +171,7 @@ func UploadSFTP(identityFile, host, dir string, files []string) error {
 	return err
 }
 
-// FindMainPackages finds all 'main' packages in the given directory and returns their
+// FindMainPackages finds all 'nodeentity' packages in the given directory and returns their
 // package paths.
 func FindMainPackages(dir string) []string {
 	var commands []string
@@ -186,7 +186,7 @@ func FindMainPackages(dir string) []string {
 	//		log.Fatal(err)
 	//	}
 	//	for name := range pkgs {
-	//		if name == "main" {
+	//		if name == "nodeentity" {
 	//			path := "./" + filepath.ToSlash(pkgdir)
 	//			commands = append(commands, path)
 	//			break

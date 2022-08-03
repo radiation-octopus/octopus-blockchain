@@ -13,6 +13,7 @@ import (
 	"github.com/radiation-octopus/octopus/utils"
 	"io"
 	"reflect"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -194,6 +195,11 @@ func (db *TrieDatabase) Node(hash entity.Hash) ([]byte, error) {
 	return nil, errors.New("not found")
 }
 
+// SaveCache使用所有可用的CPU核将快速缓存数据自动保存到给定的目录。
+func (db *TrieDatabase) SaveCache(dir string) error {
+	return db.saveCache(dir, runtime.GOMAXPROCS(0))
+}
+
 // 节点从内存中检索缓存的trie节点，如果在内存缓存中找不到任何节点，则返回nil。
 func (db *TrieDatabase) node(hash entity.Hash) node {
 	// 从干净缓存中检索节点（如果可用）
@@ -281,6 +287,23 @@ func (db *TrieDatabase) insert(hash entity.Hash, size int, node node) {
 		db.dirties[db.newest].flushNext, db.newest = hash, hash
 	}
 	db.dirtiesSize += utils.StorageSize(entity.HashLength + entry.size)
+}
+
+// saveCache使用指定的CPU内核将干净状态缓存保存到给定的目录路径。
+func (db *TrieDatabase) saveCache(dir string, threads int) error {
+	if db.cleans == nil {
+		return nil
+	}
+	log.Info("Writing clean trie cache to disk", "path", dir, "threads", threads)
+
+	start := time.Now()
+	err := db.cleans.SaveToFileConcurrent(dir, threads)
+	if err != nil {
+		log.Error("Failed to persist clean trie cache", "error", err)
+		return err
+	}
+	log.Info("Persisted the clean trie cache", "path", dir, "elapsed", entity.PrettyDuration(time.Since(start)))
+	return nil
 }
 
 // 引用将新引用从父节点添加到子节点。

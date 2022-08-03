@@ -57,6 +57,14 @@ func NewKeyStore(keydir string, scryptN, scryptP int) *KeyStore {
 	return ks
 }
 
+// NewPlaintextKeyStore为给定目录创建密钥库。不推荐使用：使用NewKeyStore。
+func NewPlaintextKeyStore(keydir string) *KeyStore {
+	keydir, _ = filepath.Abs(keydir)
+	ks := &KeyStore{storage: &keyStorePlain{keydir}}
+	ks.init(keydir)
+	return ks
+}
+
 func (ks *KeyStore) init(keydir string) {
 	//锁定互斥锁，因为帐户缓存可能会通过事件回调
 	ks.mu.Lock()
@@ -88,6 +96,57 @@ func (ks *KeyStore) NewAccount(passphrase string) (Account, error) {
 	ks.cache.add(account)
 	ks.refreshWallets()
 	return account, nil
+}
+
+// Accounts返回目录中存在的所有密钥文件。
+func (ks *KeyStore) Accounts() []Account {
+	return ks.cache.accounts()
+}
+
+// Update更改现有帐户的密码短语。
+func (ks *KeyStore) Update(a Account, passphrase, newPassphrase string) error {
+	a, key, err := ks.getDecryptedKey(a, passphrase)
+	if err != nil {
+		return err
+	}
+	return ks.storage.StoreKey(a.URL.Path, key, newPassphrase)
+}
+
+// ImportPreSaleKey对给定的以太坊预售钱包进行解密，并将密钥文件存储在密钥目录中。
+//密钥文件使用相同的密码短语加密。
+func (ks *KeyStore) ImportPreSaleKey(keyJSON []byte, passphrase string) (Account, error) {
+	a, _, err := importPreSaleKey(ks.storage, keyJSON, passphrase)
+	if err != nil {
+		return a, err
+	}
+	ks.cache.add(a)
+	ks.refreshWallets()
+	return a, nil
+}
+
+// Unlock无限期解锁给定帐户。
+func (ks *KeyStore) Unlock(a Account, passphrase string) error {
+	return ks.TimedUnlock(a, passphrase, 0)
+}
+
+// Import将给定的加密JSON密钥存储到密钥目录中。
+func (ks *KeyStore) Import(keyJSON []byte, passphrase, newPassphrase string) (Account, error) {
+	key, err := DecryptKey(keyJSON, passphrase)
+	if key != nil && key.PrivateKey != nil {
+		defer zeroKey(key.PrivateKey)
+	}
+	if err != nil {
+		return Account{}, err
+	}
+	ks.importMu.Lock()
+	defer ks.importMu.Unlock()
+
+	if ks.cache.hasAddress(key.Address) {
+		return Account{
+			Address: key.Address,
+		}, ErrAccountAlreadyExists
+	}
+	return ks.importKey(key, newPassphrase)
 }
 
 // ImportECDSA将给定的密钥存储到密钥目录中，并使用密码对其进行加密。

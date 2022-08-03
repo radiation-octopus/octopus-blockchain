@@ -50,3 +50,14 @@ func HasCodeWithPrefix(db typedb.KeyValueReader, hash entity.Hash) bool {
 	ok, _ := db.IsHas(codeKey(hash))
 	return ok
 }
+
+// WritePreimages writes the provided set of preimages to the database.
+func WritePreimages(db typedb.KeyValueWriter, preimages map[entity.Hash][]byte) {
+	for hash, preimage := range preimages {
+		if err := db.Put(preimageKey(hash), preimage); err != nil {
+			log.Crit("Failed to store trie preimage", "err", err)
+		}
+	}
+	//preimageCounter.Inc(int64(len(preimages)))
+	//preimageHitCounter.Inc(int64(len(preimages)))
+}

@@ -281,7 +281,7 @@ var lifecycleConstructorFuncs = make(LifecycleConstructors)
 // start devp2p nodes using either the Exec or Docker adapters.
 //
 // It should be called in an init function so that it has the opportunity to
-// execute the services before main() is called.
+// execute the services before nodeentity() is called.
 func RegisterLifecycles(lifecycles LifecycleConstructors) {
 	for name, f := range lifecycles {
 		if _, exists := lifecycleConstructorFuncs[name]; exists {

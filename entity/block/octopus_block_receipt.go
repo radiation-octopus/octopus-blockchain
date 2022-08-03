@@ -159,3 +159,31 @@ func (rs Receipts) DeriveFields(config *entity.ChainConfig, hash entity.Hash, nu
 
 // ReceiptForStorage是使用RLP序列化的回执的包装器，它省略了Bloom字段，并进行了重新计算的反序列化。
 type ReceiptForStorage Receipt
+
+// storedReceiptRLP是收据的存储编码。
+type storedReceiptRLP struct {
+	PostStateOrStatus []byte
+	CumulativeGasUsed uint64
+	Logs              []*LogForStorage
+}
+
+// v4StoredReceiptRLP是数据库版本4中使用的收据的存储编码。
+type v4StoredReceiptRLP struct {
+	PostStateOrStatus []byte
+	CumulativeGasUsed uint64
+	TxHash            entity.Hash
+	ContractAddress   entity.Address
+	Logs              []*LogForStorage
+	GasUsed           uint64
+}
+
+// v3StoredReceiptRLP是收据的原始存储编码，包括一些不必要的字段。
+type v3StoredReceiptRLP struct {
+	PostStateOrStatus []byte
+	CumulativeGasUsed uint64
+	//Bloom             Bloom
+	TxHash          entity.Hash
+	ContractAddress entity.Address
+	Logs            []*LogForStorage
+	GasUsed         uint64
+}

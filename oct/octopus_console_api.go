@@ -6,6 +6,7 @@ import (
 	a "github.com/radiation-octopus/octopus-blockchain"
 	ethereum "github.com/radiation-octopus/octopus-blockchain"
 	"github.com/radiation-octopus/octopus-blockchain/accounts"
+	"github.com/radiation-octopus/octopus-blockchain/blockchain"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
@@ -314,6 +315,10 @@ func (o *OctAPIBackend) TxPoolContentFrom(addr entity.Address) (block2.Transacti
 	panic("implement me")
 }
 
+func (b *OctAPIBackend) TxPool() *blockchain.TxPool {
+	return b.oct.TxPool()
+}
+
 func (o *OctAPIBackend) SubscribeNewTxsEvent(events chan<- event.NewTxsEvent) event.Subscription {
 	return o.oct.TxPool().SubscribeNewTxsEvent(events)
 }
@@ -336,6 +341,10 @@ func (o *OctAPIBackend) SubscribePendingLogsEvent(ch chan<- []*block2.Log) event
 
 func (o *OctAPIBackend) SubscribeRemovedLogsEvent(ch chan<- event.RemovedLogsEvent) event.Subscription {
 	return o.oct.BlockChain().SubscribeRemovedLogsEvent(ch)
+}
+
+func (b *OctAPIBackend) StartMining(threads int) error {
+	return b.oct.StartMining(threads)
 }
 
 func (o *OctAPIBackend) ChainConfig() *entity.ChainConfig {

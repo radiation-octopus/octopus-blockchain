@@ -70,7 +70,7 @@ type (
 		Rest []rlp.RawValue `rlp:"tail"`
 	}
 
-	// Findnode is a query for nodes close to the given target.
+	// Findnode是对接近给定目标的节点的查询。
 	Findnode struct {
 		Target     Pubkey
 		Expiration uint64

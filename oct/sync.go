@@ -235,7 +235,7 @@ func (h *handler) doSync(op *chainSyncOp) error {
 	if op.mode == downloader.SnapSync {
 		// Before launch the snap sync, we have to ensure user uses the same
 		// txlookup limit.
-		// The main concern here is: during the snap sync Geth won't index the
+		// The nodeentity concern here is: during the snap sync Geth won't index the
 		// block(generate tx indices) before the HEAD-limit. But if user changes
 		// the limit in the next snap sync(e.g. user kill Geth manually and
 		// restart) then it will be hard for Geth to figure out the oldest block

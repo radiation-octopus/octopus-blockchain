@@ -7,28 +7,36 @@ import (
 	"fmt"
 	"github.com/prometheus/tsdb/fileutil"
 	"github.com/radiation-octopus/octopus-blockchain/accounts"
-	"github.com/radiation-octopus/octopus-blockchain/entity/genesis"
+	"github.com/radiation-octopus/octopus-blockchain/crypto"
+	"github.com/radiation-octopus/octopus-blockchain/entity"
+	g "github.com/radiation-octopus/octopus-blockchain/entity/genesis"
 	"github.com/radiation-octopus/octopus-blockchain/entity/hexutil"
 	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
 	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/p2p"
-	"github.com/radiation-octopus/octopus-blockchain/params"
 	"github.com/radiation-octopus/octopus-blockchain/rpc"
 	"github.com/radiation-octopus/octopus-blockchain/terr"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
-func (node *Node) start() {
-	log.Info("node Starting")
-	makeFullNode(node)
-	log.Info("node 启动完成")
-	//New(oct)
-}
+var (
+	// transitionDifficulty is the target total difficulty for transition
+	transitionDifficulty = new(big.Int).Mul(big.NewInt(20), entity.MinimumDifficulty)
+
+	// blockInterval is the time interval for creating a new eth2 block
+	blockInterval    = time.Second * 3
+	blockIntervalInt = 3
+
+	// finalizationDist is the block distance for finalizing block
+	finalizationDist = 10
+)
 
 func (node *Node) close() {
 
@@ -251,6 +259,11 @@ func (n *Node) Wait() {
 	<-n.stop
 }
 
+// InstanceDir检索协议堆栈使用的实例目录。
+func (n *Node) InstanceDir() string {
+	return n.config.instanceDir()
+}
+
 // Close停止节点并释放在Node constructor New中获取的资源。
 func (n *Node) Close() error {
 	n.startStopLock.Lock()
@@ -276,6 +289,12 @@ func (n *Node) Close() error {
 		panic(fmt.Sprintf("node is in unknown state %d", state))
 	}
 }
+
+//// EventMux retrieves the event multiplexer used by all the network services in
+//// the current protocol stack.
+//func (n *Node) EventMux() *event.TypeMux {
+//	return n.eventmux
+//}
 
 // doClose释放New（）获取的资源，收集错误。
 func (n *Node) doClose(errs []error) error {
@@ -346,6 +365,39 @@ func (n *Node) openEndpoints() error {
 		n.server.Stop()
 	}
 	return err
+}
+
+// OpenDatabase从节点的实例目录中打开具有给定名称的现有数据库（如果找不到以前的名称，则创建一个）。
+//如果节点是短暂的，则返回内存数据库。
+func (n *Node) OpenDatabase(name string, cache, handles int, namespace string, readonly bool) (typedb.Database, error) {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+	if n.state == closedState {
+		return nil, ErrNodeStopped
+	}
+
+	var db typedb.Database
+	var err error
+	if n.config.DataDir == "" {
+		db = rawdb.NewMemoryDatabase()
+	} else {
+		db, err = rawdb.NewLevelDBDatabase(n.ResolvePath(name), cache, handles, namespace, readonly)
+	}
+
+	if err == nil {
+		db = n.wrapDatabase(db)
+	}
+	return db, err
+}
+
+// Config返回节点的配置。
+func (n *Node) Config() *Config {
+	return n.config
+}
+
+// KeyStoreDir检索密钥目录
+func (n *Node) KeyStoreDir() string {
+	return n.keyDir
 }
 
 // startRPC是一种辅助方法，用于在节点启动期间配置所有各种RPC端点。
@@ -653,65 +705,8 @@ func (db *closeTrackingDB) Close() error {
 	return db.Database.Close()
 }
 
-func makeFullNode(node *Node) (*Node, error) {
-	//定义章鱼节点的基本配置
-	//datadir, _ := os.MkdirTemp("", "")
-
-	// 生成一批用于封存和资金的帐户
-	//faucets := make([]*ecdsa.PrivateKey, 16)
-	//genesis := makeGenesis(faucets)
-	//定义oct节点的基本配置
-	datadir := os.TempDir()
-	config := &Config{
-		Name:    "geth",
-		Version: params.Version,
-		DataDir: datadir,
-		P2P: p2p.Config{
-			ListenAddr:  "0.0.0.0:0",
-			NoDiscovery: true,
-			MaxPeers:    25,
-		},
-		UseLightweightKDF: true,
-	}
-	// 创建节点并在其上配置完整的章鱼节点
-	stack, err := NewNodeCfg(node, config)
-	if err != nil {
-		return nil, err
-	}
-
-	//econfig := &oct.Config{
-	//	Genesis:         genesis,
-	//	NetworkId:       genesis.Config.ChainID.Uint64(),
-	//	//SyncMode:        downloader.FullSync,
-	//	DatabaseCache:   256,
-	//	DatabaseHandles: 256,
-	//	TxPool:          blockchain.DefaultTxPoolConfig,
-	//	//GPO:             ethconfig.Defaults.GPO,
-	//	//Octell:          ethconfig.Defaults.Octell,
-	//	Miner: miner.Config{
-	//		GasFloor: genesis.GasLimit * 9 / 10,
-	//		GasCeil:  genesis.GasLimit * 11 / 10,
-	//		GasPrice: big.NewInt(1),
-	//		Recommit: 10 * time.Second, //禁用重新提交
-	//	},
-	//	//LightServ:        100,
-	//	//LightPeers:       10,
-	//	//LightNoSyncServe: true,
-	//}
-	//ethBackend, err := oct.New(stack, econfig)
-	if err != nil {
-		return nil, err
-	}
-	//_, err = les.NewLesServer(stack, ethBackend, econfig)
-	if err != nil {
-		log.Info("Failed to create the LES server", "err", err)
-	}
-	err = stack.Start()
-	return stack, err
-}
-
 // 新建创建一个新的P2P节点，为协议注册做好准备。
-func NewNodeCfg(node *Node, conf *Config) (*Node, error) {
+func NewNodeCfg(conf *Config) (*Node, error) {
 	// 复制config并解析datadir，以便将来对当前工作目录的更改不会影响节点。
 	confCopy := *conf
 	conf = &confCopy
@@ -737,26 +732,26 @@ func NewNodeCfg(node *Node, conf *Config) (*Node, error) {
 		return nil, errors.New(`Config.Name cannot end in ".ipc"`)
 	}
 
-	node.config = conf
-	node.inprocHandler = rpc.NewServer()
-	node.log = conf.Logger
-	node.stop = make(chan struct{})
-	node.databases = make(map[*closeTrackingDB]struct{})
-	node.server = &p2p.Server{
-		Config: conf.P2P,
-	}
-	//node := &Node{
-	//	config:        conf,
-	//	inprocHandler: rpc.NewServer(),
-	//	//eventmux:      new(event.TypeMux),
-	//	log:  conf.Logger,
-	//	stop: make(chan struct{}),
-	//	//server:        &p2p.Server{Config: conf.P2P},
-	//	databases:     make(map[*closeTrackingDB]struct{}),
+	//node.config = conf
+	//node.inprocHandler = rpc.NewServer()
+	//node.log = conf.Logger
+	//node.stop = make(chan struct{})
+	//node.databases = make(map[*closeTrackingDB]struct{})
+	//node.server = &p2p.Server{
+	//	Config: conf.P2P,
 	//}
+	node := &Node{
+		config:        conf,
+		inprocHandler: rpc.NewServer(),
+		//eventmux:      new(event.TypeMux),
+		log:       conf.Logger,
+		stop:      make(chan struct{}),
+		server:    &p2p.Server{Config: conf.P2P},
+		databases: make(map[*closeTrackingDB]struct{}),
+	}
 
 	// 注册内置API。
-	//node.rpcAPIs = append(node.rpcAPIs, node.apis()...)
+	node.rpcAPIs = append(node.rpcAPIs, node.apis()...)
 
 	// 获取实例目录锁。
 	if err := node.openDataDir(); err != nil {
@@ -804,8 +799,20 @@ func NewNodeCfg(node *Node, conf *Config) (*Node, error) {
 }
 
 // makeGenesis基于一些预定义的水龙头帐户创建自定义的八单元genesis块。
-func makeGenesis(faucets []*ecdsa.PrivateKey) *genesis.Genesis {
-	genesis := genesis.DefaultRopstenGenesisBlock()
+func MakeGenesis(faucets []*ecdsa.PrivateKey) *g.Genesis {
+	genesis := g.DefaultRopstenGenesisBlock()
+	genesis.Difficulty = entity.MinimumDifficulty
+	genesis.GasLimit = 25000000
 
+	genesis.BaseFee = big.NewInt(entity.InitialBaseFee)
+	genesis.Config = entity.AllOctellProtocolChanges
+	genesis.Config.TerminalTotalDifficulty = transitionDifficulty
+
+	genesis.Alloc = g.GenesisAlloc{}
+	for _, faucet := range faucets {
+		genesis.Alloc[crypto.PubkeyToAddress(faucet.PublicKey)] = g.GenesisAccount{
+			Balance: new(big.Int).Exp(big.NewInt(2), big.NewInt(128), nil),
+		}
+	}
 	return genesis
 }

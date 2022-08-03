@@ -17,6 +17,7 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
 	"github.com/radiation-octopus/octopus-blockchain/vm"
+	"io"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,9 @@ const (
 	maxTimeFutureBlocks = 30
 	TriesInMemory       = 128
 )
+
+// statsReportLimit是导入和导出期间的时间限制，在此之后，我们始终打印进度。这避免了用户想知道发生了什么。
+const statsReportLimit = 8 * time.Second
 
 // CacheConfig包含驻留在区块链中的trie缓存/精简的配置值。
 type CacheConfig struct {
@@ -42,6 +46,14 @@ type CacheConfig struct {
 	Preimages           bool          // 是否将trie密钥的前映像存储到磁盘
 
 	SnapshotWait bool // 等待启动时创建快照.
+}
+
+var defaultCacheConfig = &CacheConfig{
+	TrieCleanLimit: 256,
+	TrieDirtyLimit: 256,
+	TrieTimeLimit:  5 * time.Minute,
+	SnapshotLimit:  256,
+	SnapshotWait:   true,
 }
 
 //blockchain结构体
@@ -68,12 +80,12 @@ type BlockChain struct {
 	currentBlock     atomic.Value         // 当前区块
 	currentFastBlock atomic.Value         //快速同步链的当前区块
 
-	stateCache    operationdb.DatabaseI // 要在导入之间重用的状态数据库（包含状态缓存）
-	bodyCache     *lru.Cache            // 最近块体的缓存
-	bodyRLPCache  *lru.Cache            // RLP编码格式的最新块体缓存
-	receiptsCache *lru.Cache            // 缓存每个块的最新收据
-	blockCache    *lru.Cache            // 缓存最近的整个块
-	txLookupCache *lru.Cache            // 缓存最新的事务查找数据。
+	//stateCache    operationdb.DatabaseI // 要在导入之间重用的状态数据库（包含状态缓存）
+	bodyCache     *lru.Cache // 最近块体的缓存
+	bodyRLPCache  *lru.Cache // RLP编码格式的最新块体缓存
+	receiptsCache *lru.Cache // 缓存每个块的最新收据
+	blockCache    *lru.Cache // 缓存最近的整个块
+	txLookupCache *lru.Cache // 缓存最新的事务查找数据。
 
 	operationCache operationdb.DatabaseI // 要在导入之间重用的状态数据库（包含状态缓存）
 	futureBlocks   *lru.Cache            //新区块缓存区
@@ -118,6 +130,73 @@ func (bc *BlockChain) InsertReceiptChain(blocks block2.Blocks, receipts []block2
 	panic("implement me")
 }
 
+// 停止停止区块链服务。如果当前正在进行任何导入，它将使用procInterrupt中止它们。
+func (bc *BlockChain) Stop() {
+	if !atomic.CompareAndSwapInt32(&bc.running, 0, 1) {
+		return
+	}
+
+	// 取消订阅从区块链注册的所有订阅。
+	bc.scope.Close()
+
+	// 向所有goroutine发出关闭信号。
+	close(bc.quit)
+	bc.StopInsert()
+
+	// 现在等待所有链修改结束，持久goroutine退出。
+	//注意：Close等待互斥体变为可用，即当Close返回时，任何正在运行的链修改都将退出。
+	//由于我们也称为StopInsert，互斥锁应该很快可用。关闭后不能再次执行。
+	bc.chainmu.Close()
+	bc.wg.Wait()
+
+	// 确保将整个状态快照记录到磁盘。
+	var snapBase entity.Hash
+	//if bc.snaps != nil {
+	//	var err error
+	//	if snapBase, err = bc.snaps.Journal(bc.CurrentBlock().Root()); err != nil {
+	//		log.Error("Failed to journal state snapshot", "err", err)
+	//	}
+	//}
+
+	// 在退出之前，确保最近块的状态也存储到磁盘。
+	//我们编写了三种不同的状态来捕捉不同的重启场景：
+	//-HEAD：所以在一般情况下，我们不需要重新处理任何块
+	//-HEAD-1：所以如果我们的头变成叔叔，我们就不会做大的重组
+	//-HEAD-127：所以我们对重新执行的块数有一个硬限制
+	if !bc.cacheConfig.TrieDirtyDisabled {
+		triedb := bc.operationCache.TrieDB()
+
+		for _, offset := range []uint64{0, 1, TriesInMemory - 1} {
+			if number := bc.CurrentBlock().NumberU64(); number > offset {
+				recent := bc.GetBlockByNumber(number - offset)
+
+				log.Info("Writing cached state to disk", "block", recent.Number(), "hash", recent.Hash(), "root", recent.Root())
+				if err := triedb.Commit(recent.Root(), true, nil); err != nil {
+					log.Error("Failed to commit recent state trie", "err", err)
+				}
+			}
+		}
+		if snapBase != (entity.Hash{}) {
+			log.Info("Writing snapshot state to disk", "root", snapBase)
+			if err := triedb.Commit(snapBase, true, nil); err != nil {
+				log.Error("Failed to commit recent state trie", "err", err)
+			}
+		}
+		for !bc.triegc.Empty() {
+			triedb.Dereference(bc.triegc.PopItem().(entity.Hash))
+		}
+		if size, _ := triedb.Size(); size != 0 {
+			log.Error("Dangling trie nodes after full cleanup")
+		}
+	}
+	// 确保所有实时缓存项都保存到磁盘中，以便在节点重新启动时跳过缓存预热。
+	if bc.cacheConfig.TrieCleanJournal != "" {
+		triedb := bc.operationCache.TrieDB()
+		triedb.SaveCache(bc.cacheConfig.TrieCleanJournal)
+	}
+	log.Info("Blockchain stopped")
+}
+
 //// IsLondon返回num是否等于或大于London fork块。
 //func (c *entity.ChainConfig) IsLondon(num *big.Int) bool {
 //	return isForked(c.LondonBlock, num)
@@ -127,6 +206,43 @@ func (bc *BlockChain) InsertReceiptChain(blocks block2.Blocks, receipts []block2
 //调用此方法后，将永久禁用插入。
 func (bc *BlockChain) StopInsert() {
 	atomic.StoreInt32(&bc.procInterrupt, 1)
+}
+
+// ExportN将活动链的子集写入给定的写入器。
+func (bc *BlockChain) ExportN(w io.Writer, first uint64, last uint64) error {
+	if first > last {
+		return fmt.Errorf("export failed: first (%d) is greater than last (%d)", first, last)
+	}
+	log.Info("Exporting batch of blocks", "count", last-first+1)
+
+	var (
+		parentHash entity.Hash
+		start      = time.Now()
+		reported   = time.Now()
+	)
+	for nr := first; nr <= last; nr++ {
+		block := bc.GetBlockByNumber(nr)
+		if block == nil {
+			return fmt.Errorf("export failed on #%d: not found", nr)
+		}
+		if nr > first && block.ParentHash() != parentHash {
+			return fmt.Errorf("export failed: chain reorg during export")
+		}
+		parentHash = block.Hash()
+		if err := block.EncodeRLP(w); err != nil {
+			return err
+		}
+		if time.Since(reported) >= statsReportLimit {
+			log.Info("Exporting blocks", "exported", block.NumberU64()-first, "elapsed", entity.PrettyDuration(time.Since(start)))
+			reported = time.Now()
+		}
+	}
+	return nil
+}
+
+// 导出将活动链写入给定的写入程序。
+func (bc *BlockChain) Export(w io.Writer) error {
+	return bc.ExportN(w, uint64(0), bc.CurrentBlock().NumberU64())
 }
 
 //isForked返回在块s上调度的fork是否在给定的头块上处于活动状态。
@@ -206,36 +322,39 @@ func (bc *BlockChain) GetVMConfig() *vm.Config {
 }
 
 //构建区块链结构体
-func NewBlockChain(bc *BlockChain, database typedb.Database, cacheConfig *CacheConfig, chainConfig *entity.ChainConfig, engine consensus.Engine, shouldPreserve func(header *block2.Header) bool) (*BlockChain, error) {
+func NewBlockChain(db typedb.Database, cacheConfig *CacheConfig, chainConfig *entity.ChainConfig, engine consensus.Engine, vmConfig vm.Config, shouldPreserve func(header *block2.Header) bool) (*BlockChain, error) {
+	if cacheConfig == nil {
+		cacheConfig = defaultCacheConfig
+	}
 	futureBlocks, _ := lru.New(maxFutureBlocks)
-	bc.db = database
-	bc.quit = make(chan struct{})
-	bc.futureBlocks = futureBlocks
-	bc.engine = engine
-	bc.chainConfig = chainConfig
-	bc.cacheConfig = cacheConfig
-	bc.triegc = prque.New(nil)
-	//bc.vmConfig = vm.Config{
-	//	EnablePreimageRecording: octCfg.EnablePreimageRecording,
-	//}
-	//bc = &BlockChain{
-	//	db:   db,
-	//	quit: make(chan struct{}),
-	//	//chainmu:       syncx.NewClosableMutex(),
-	//	//stateCache: state.NewDatabaseWithConfig(db, &trie.Config{
-	//	//	Cache:     cacheConfig.TrieCleanLimit,
-	//	//	Journal:   cacheConfig.TrieCleanJournal,
-	//	//	Preimages: cacheConfig.Preimages,
-	//	//}),
-	//	futureBlocks: futureBlocks,
-	//	engine:       engine,
-	//}
+	//bc.db = database
+	//bc.quit = make(chan struct{})
+	//bc.futureBlocks = futureBlocks
+	//bc.engine = engine
+	//bc.chainConfig = chainConfig
+	//bc.cacheConfig = cacheConfig
+	//bc.triegc = prque.New(nil)
+
+	bc := &BlockChain{
+		chainConfig: chainConfig,
+		cacheConfig: cacheConfig,
+		db:          db,
+		quit:        make(chan struct{}),
+		chainmu:     syncx.NewClosableMutex(),
+		operationCache: operationdb.NewDatabaseWithConfig(db, &trie.Config{
+			Cache:     cacheConfig.TrieCleanLimit,
+			Journal:   cacheConfig.TrieCleanJournal,
+			Preimages: cacheConfig.Preimages,
+		}),
+		futureBlocks: futureBlocks,
+		engine:       engine,
+	}
 	bc.forker = NewForkChoice(bc, shouldPreserve)
-	bc.operationCache = operationdb.NewDatabaseWithConfig(bc.db, &trie.Config{
-		//Cache:     cacheConfig.TrieCleanLimit,
-		//Journal:   cacheConfig.TrieCleanJournal,
-		//Preimages: cacheConfig.Preimages,
-	})
+	//bc.operationCache = operationdb.NewDatabaseWithConfig(bc.db, &trie.Config{
+	//	//Cache:     cacheConfig.TrieCleanLimit,
+	//	//Journal:   cacheConfig.TrieCleanJournal,
+	//	//Preimages: cacheConfig.Preimages,
+	//})
 	//构建区块验证器
 	bc.validator = NewBlockValidator(bc, engine)
 	//构建区块处理器

@@ -37,15 +37,15 @@ type UDPConn interface {
 
 // Config holds settings for the discovery listener.
 type Config struct {
-	// These settings are required and configure the UDP listener:
+	// 需要这些设置并配置UDP侦听器：
 	PrivateKey *ecdsa.PrivateKey
 
 	// These settings are optional:
-	NetRestrict  *netutil.Netlist   // list of allowed IP networks
-	Bootnodes    []*enode.Node      // list of bootstrap nodes
-	Unhandled    chan<- ReadPacket  // unhandled packets are sent on this channel
-	Log          log.Logger         // if set, log messages go here
-	ValidSchemes enr.IdentityScheme // allowed identity schemes
+	NetRestrict  *netutil.Netlist   // 允许的IP网络列表
+	Bootnodes    []*enode.Node      // 引导节点列表
+	Unhandled    chan<- ReadPacket  // 未处理的数据包在此通道上发送
+	Log          log.Logger         // 如果设置了，则记录消息到此处
+	ValidSchemes enr.IdentityScheme // 允许的标识方案
 	Clock        mclock.Clock
 }
 

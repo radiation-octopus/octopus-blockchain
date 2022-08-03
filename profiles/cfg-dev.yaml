@@ -106,7 +106,7 @@ octopus:
   entity:
     binding:
       chainConfig:
-        ChainID: "666"
+        ChainID: "888"
         engine: "POW"
   miner:
     binding:

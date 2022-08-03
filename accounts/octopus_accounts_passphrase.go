@@ -3,7 +3,6 @@ package accounts
 import (
 	"bytes"
 	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -82,7 +81,6 @@ func (ks *keyStorePassphrase) StoreKey(filename string, key *Key, auth string) e
 				"This indicates that the keystore is corrupted. \n" +
 				"The corrupted file is stored at \n%v\n" +
 				"Please file a ticket at:\n\n" +
-				"https://github.com/ethereum/go-ethereum/issues." +
 				"The error was : %s"
 			//lint：忽略ST1005这是给用户的消息
 			return fmt.Errorf(msg, tmpName, err)
@@ -194,6 +192,12 @@ func decryptKeyV3(keyProtected *encryptedKeyJSONV3, auth string) (keyBytes []byt
 	return plainText, keyId, err
 }
 
+// StoreKey生成密钥，用“auth”加密并存储在给定目录中
+func StoreKey(dir, auth string, scryptN, scryptP int) (Account, error) {
+	_, a, err := storeNewKey(&keyStorePassphrase{dir, scryptN, scryptP, false}, rand.Reader, auth)
+	return a, err
+}
+
 func DecryptDataV3(cryptoJson CryptoJSON, auth string) ([]byte, error) {
 	if cryptoJson.Cipher != "aes-128-ctr" {
 		return nil, fmt.Errorf("cipher not supported: %v", cryptoJson.Cipher)
@@ -297,53 +301,6 @@ func ensureInt(x interface{}) int {
 		res = int(x.(float64))
 	}
 	return res
-}
-
-func aesCTRXOR(key, inText, iv []byte) ([]byte, error) {
-	//选择AES-128是因为encryptKey的大小。
-	aesBlock, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	stream := cipher.NewCTR(aesBlock, iv)
-	outText := make([]byte, len(inText))
-	stream.XORKeyStream(outText, inText)
-	return outText, err
-}
-
-func aesCBCDecrypt(key, cipherText, iv []byte) ([]byte, error) {
-	aesBlock, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	decrypter := cipher.NewCBCDecrypter(aesBlock, iv)
-	paddedPlaintext := make([]byte, len(cipherText))
-	decrypter.CryptBlocks(paddedPlaintext, cipherText)
-	plaintext := pkcs7Unpad(paddedPlaintext)
-	if plaintext == nil {
-		return nil, ErrDecrypt
-	}
-	return plaintext, err
-}
-
-func pkcs7Unpad(in []byte) []byte {
-	if len(in) == 0 {
-		return nil
-	}
-
-	padding := in[len(in)-1]
-	if int(padding) > len(in) || padding > aes.BlockSize {
-		return nil
-	} else if padding == 0 {
-		return nil
-	}
-
-	for i := len(in) - 1; i > len(in)-int(padding)-1; i-- {
-		if in[i] != padding {
-			return nil
-		}
-	}
-	return in[:len(in)-int(padding)]
 }
 
 func getKDFKey(cryptoJSON CryptoJSON, auth string) ([]byte, error) {

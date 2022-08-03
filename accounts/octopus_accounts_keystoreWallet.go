@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	octopus "github.com/radiation-octopus/octopus-blockchain"
 	"github.com/radiation-octopus/octopus-blockchain/crypto"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"math/big"
@@ -10,6 +11,9 @@ import (
 type keystoreWallet struct {
 	account  Account   // 此钱包中包含的单个帐户
 	keystore *KeyStore // 帐户来源的密钥库
+}
+
+func (w *keystoreWallet) SelfDerive(bases []DerivationPath, chain octopus.ChainStateReader) {
 }
 
 //URL实现帐户。钱包，返回内帐户的URL。

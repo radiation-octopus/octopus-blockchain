@@ -64,6 +64,22 @@ func (bc *BlockChain) HasBlock(hash entity.Hash, number uint64) bool {
 	return rawdb.HasBody(bc.db, hash, number)
 }
 
+// HasState检查状态trie是否完全存在于数据库中。
+func (bc *BlockChain) HasState(hash entity.Hash) bool {
+	_, err := bc.operationCache.OpenTrie(hash)
+	return err == nil
+}
+
+// HasBlockAndState检查块和关联状态trie是否完全存在于数据库中，如果存在，则缓存它。
+func (bc *BlockChain) HasBlockAndState(hash entity.Hash, number uint64) bool {
+	// 首先检查块本身是否已知
+	block := bc.GetBlock(hash, number)
+	if block == nil {
+		return false
+	}
+	return bc.HasState(block.Root())
+}
+
 // GetHeadersFrom以rlp形式返回从给定数字向后的连续标头段。
 func (bc *BlockChain) GetHeadersFrom(number, count uint64) []rlp.RawValue {
 	return bc.hc.GetHeadersFrom(number, count)
@@ -92,13 +108,13 @@ func (bc *BlockChain) SetTxLookupLimit(limit uint64) {
 }
 
 // StateCache returns the caching database underpinning the blockchain instance.
-func (bc *BlockChain) StateCache() operationdb.DatabaseI {
-	return bc.stateCache
-}
+//func (bc *BlockChain) StateCache() operationdb.DatabaseI {
+//	return bc.stateCache
+//}
 
 // TrioNode从临时内存缓存或持久存储中检索与trie节点相关的数据块。
 func (bc *BlockChain) TrieNode(hash entity.Hash) ([]byte, error) {
-	return bc.stateCache.TrieDB().Node(hash)
+	return bc.operationCache.TrieDB().Node(hash)
 }
 
 // ContractCodeWithPrefix从临时内存缓存或持久存储中检索与协定哈希相关联的数据块。
@@ -107,7 +123,7 @@ func (bc *BlockChain) ContractCodeWithPrefix(hash entity.Hash) ([]byte, error) {
 	type codeReader interface {
 		ContractCodeWithPrefix(addrHash, codeHash entity.Hash) ([]byte, error)
 	}
-	return bc.stateCache.(codeReader).ContractCodeWithPrefix(entity.Hash{}, hash)
+	return bc.operationCache.(codeReader).ContractCodeWithPrefix(entity.Hash{}, hash)
 }
 
 // GetBodyRLP通过哈希从数据库中检索RLP编码的块体，如果找到，则将其缓存。

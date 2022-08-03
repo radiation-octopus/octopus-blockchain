@@ -144,8 +144,7 @@ func (n *Node) Record() *enr.Record {
 	return &cpy
 }
 
-// ValidateComplete checks whether n has a valid IP and UDP port.
-// Deprecated: don't use this method.
+// ValidateComplete检查n是否具有有效的IP和UDP端口。已弃用：不要使用此方法。
 func (n *Node) ValidateComplete() error {
 	if n.Incomplete() {
 		return errors.New("missing IP address")

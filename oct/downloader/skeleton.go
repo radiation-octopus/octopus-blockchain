@@ -117,7 +117,7 @@ type headUpdate struct {
 // actual requests and to validate any security constraints.
 //
 // Concurrency note: header requests and responses are handled concurrently from
-// the main runloop to allow Keccak256 hash verifications on the peer's thread and
+// the nodeentity runloop to allow Keccak256 hash verifications on the peer's thread and
 // to drop on invalid response. The request struct must contain all the data to
 // construct the response without accessing runloop internals (i.e. subchains).
 // That is only included to allow the runloop to match a response to the task being
@@ -169,7 +169,7 @@ type backfiller interface {
 // Since the skeleton is grown backwards from head to genesis, it is handled as
 // a separate entity, not mixed in with the logical sequential transition of the
 // blocks. Once the skeleton is connected to an existing, validated chain, the
-// headers will be moved into the main downloader for filling and execution.
+// headers will be moved into the nodeentity downloader for filling and execution.
 //
 // Opposed to the original Ethereum block synchronization which is trustless (and
 // uses a master peer to minimize the attack surface), post-merge block sync starts

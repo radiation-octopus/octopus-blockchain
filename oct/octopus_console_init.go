@@ -54,4 +54,12 @@ func init() {
 		miner,
 		"start miner",
 		"minerStart")
+	mapClient := make(map[string]interface{})
+	mapClient["port"] = ""
+	console.BindingConsole(
+		new(P2PClient),
+		"P2PClientCmd",
+		mapClient,
+		"server conn",
+		"conn")
 }

@@ -96,7 +96,7 @@ var ErrCancelled = errors.New("sync cancelled")
 // to actual requests and to validate any security constraints.
 //
 // Concurrency note: account requests and responses are handled concurrently from
-// the main runloop to allow Merkle proof verifications on the peer's thread and
+// the nodeentity runloop to allow Merkle proof verifications on the peer's thread and
 // to drop on invalid response. The request struct must contain all the data to
 // construct the response without accessing runloop internals (i.e. task). That
 // is only included to allow the runloop to match a response to the task being
@@ -134,7 +134,7 @@ type accountResponse struct {
 // actual requests and to validate any security constraints.
 //
 // Concurrency note: bytecode requests and responses are handled concurrently from
-// the main runloop to allow Keccak256 hash verifications on the peer's thread and
+// the nodeentity runloop to allow Keccak256 hash verifications on the peer's thread and
 // to drop on invalid response. The request struct must contain all the data to
 // construct the response without accessing runloop internals (i.e. task). That
 // is only included to allow the runloop to match a response to the task being
@@ -166,7 +166,7 @@ type bytecodeResponse struct {
 // to actual requests and to validate any security constraints.
 //
 // Concurrency note: storage requests and responses are handled concurrently from
-// the main runloop to allow Merkle proof verifications on the peer's thread and
+// the nodeentity runloop to allow Merkle proof verifications on the peer's thread and
 // to drop on invalid response. The request struct must contain all the data to
 // construct the response without accessing runloop internals (i.e. tasks). That
 // is only included to allow the runloop to match a response to the task being
@@ -212,7 +212,7 @@ type storageResponse struct {
 // are to actual requests and to validate any security constraints.
 //
 // Concurrency note: trie node requests and responses are handled concurrently from
-// the main runloop to allow Keccak256 hash verifications on the peer's thread and
+// the nodeentity runloop to allow Keccak256 hash verifications on the peer's thread and
 // to drop on invalid response. The request struct must contain all the data to
 // construct the response without accessing runloop internals (i.e. task). That
 // is only included to allow the runloop to match a response to the task being
@@ -247,7 +247,7 @@ type trienodeHealResponse struct {
 // actual requests and to validate any security constraints.
 //
 // Concurrency note: bytecode requests and responses are handled concurrently from
-// the main runloop to allow Keccak256 hash verifications on the peer's thread and
+// the nodeentity runloop to allow Keccak256 hash verifications on the peer's thread and
 // to drop on invalid response. The request struct must contain all the data to
 // construct the response without accessing runloop internals (i.e. task). That
 // is only included to allow the runloop to match a response to the task being
@@ -538,13 +538,10 @@ func (s *Syncer) Unregister(id string) error {
 	return nil
 }
 
-// Sync starts (or resumes a previous) sync cycle to iterate over an state trie
-// with the given root and reconstruct the nodes based on the snapshot leaves.
-// Previously downloaded segments will not be redownloaded of fixed, rather any
-// errors will be healed after the leaves are fully accumulated.
+// Sync启动（或恢复上一个）同步周期，以使用给定根在状态trie上迭代，并基于快照叶重建节点。
+//以前下载的片段不会重新下载或修复，而是在叶子完全累积后修复任何错误。
 func (s *Syncer) Sync(root entity.Hash, cancel chan struct{}) error {
-	// Move the trie root from any previous value, revert stateless markers for
-	// any peers and initialize the syncer if it was not yet run
+	// 从任何以前的值中移动trie根，还原任何对等方的无状态标记，并在同步器尚未运行时初始化同步器
 	s.lock.Lock()
 	s.root = root
 	s.healer = &healTask{
@@ -558,7 +555,7 @@ func (s *Syncer) Sync(root entity.Hash, cancel chan struct{}) error {
 	if s.startTime == (time.Time{}) {
 		s.startTime = time.Now()
 	}
-	// Retrieve the previous sync status from LevelDB and abort if already synced
+	// 从LevelDB检索以前的同步状态，如果已经同步，则中止
 	s.loadSyncStatus()
 	if len(s.tasks) == 0 && s.healer.scheduler.Pending() == 0 {
 		log.Debug("Snapshot sync already completed")
@@ -1931,7 +1928,7 @@ func (s *Syncer) processStorageResponse(res *storageResponse) {
 			// contract handling mode
 			if res.subTask == nil && i == len(res.hashes)-1 && res.cont {
 				// If we haven't yet started a large-contract retrieval, create
-				// the subtasks for it within the main account task
+				// the subtasks for it within the nodeentity account task
 				if tasks, ok := res.mainTask.SubTasks[account]; !ok {
 					var (
 						keys    = res.hashes[i]

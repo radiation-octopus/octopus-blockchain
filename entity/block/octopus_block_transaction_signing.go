@@ -159,6 +159,44 @@ type EIP155Signer struct {
 	chainId, chainIdMul *big.Int
 }
 
+func (s EIP155Signer) ChainID() *big.Int {
+	return s.chainId
+}
+
+func (s EIP155Signer) Equal(s2 Signer) bool {
+	eip155, ok := s2.(EIP155Signer)
+	return ok && eip155.chainId.Cmp(s.chainId) == 0
+}
+
+func (s EIP155Signer) Sender(tx *Transaction) (entity.Address, error) {
+	if tx.Type() != LegacyTxType {
+		return entity.Address{}, ErrTxTypeNotSupported
+	}
+	if !tx.Protected() {
+		return HomesteadSigner{}.Sender(tx)
+	}
+	if tx.ChainId().Cmp(s.chainId) != 0 {
+		return entity.Address{}, ErrInvalidChainId
+	}
+	V, R, S := tx.RawSignatureValues()
+	V = new(big.Int).Sub(V, s.chainIdMul)
+	V.Sub(V, big8)
+	return recoverPlain(s.Hash(tx), R, S, V, true)
+}
+
+// 散列返回要由发送方签名的散列。它不能唯一标识交易。
+func (s EIP155Signer) Hash(tx *Transaction) entity.Hash {
+	return rlpHash([]interface{}{
+		tx.Nonce(),
+		tx.GasPrice(),
+		tx.Gas(),
+		tx.To(),
+		tx.Value(),
+		tx.Data(),
+		s.chainId, uint(0), uint(0),
+	})
+}
+
 func NewEIP155Signer(chainId *big.Int) EIP155Signer {
 	if chainId == nil {
 		chainId = new(big.Int)

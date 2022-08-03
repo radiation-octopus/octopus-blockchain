@@ -84,7 +84,7 @@ var (
 */
 type TxPool struct {
 	config blockchainconfig.TxPoolConfig
-	//chainconfig *params.ChainConfig
+	//chainconfig *entity.ChainConfig
 	chain    blockChainop
 	gasPrice *big.Int
 	txFeed   event.Feed

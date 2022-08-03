@@ -6,6 +6,7 @@ import (
 	"github.com/edsrzf/mmap-go"
 	"github.com/hashicorp/golang-lru/simplelru"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
+	"github.com/radiation-octopus/octopus-blockchain/consensus/beacon"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
@@ -388,7 +389,7 @@ type Config struct {
 
 // Octell是一个基于实现Octell算法的工作证明的共识引擎。
 type Octell struct {
-	Config *Config `autoInjectLang:"octell.Config"` //启动项配置
+	Config *Config //`autoInjectLang:"octell.Config"` //启动项配置
 
 	caches   *lru // 内存缓存，以避免频繁重新生成
 	datasets *lru // 内存中的数据集，以避免过于频繁地重新生成
@@ -444,7 +445,7 @@ func (o *Octell) StopRemoteSealer() error {
 	return nil
 }
 
-func (o *Octell) octellStart(chainConfig *entity.ChainConfig) {
+func CreateOctell(chainConfig *entity.ChainConfig, config *Config) consensus.Engine {
 	noverify := director.ReadCfg("octopus", "miner", "binding", "config", "noverify").(bool)
 	notify := director.ReadCfg("octopus", "miner", "binding", "config", "notify")
 	// 如果需要权限证明，请进行设置
@@ -452,7 +453,7 @@ func (o *Octell) octellStart(chainConfig *entity.ChainConfig) {
 	if chainConfig.Engine == "Clique" { //POA
 		//engine = clique.New(entity.chainConfig.Clique, db)
 	} else { //POW
-		switch o.Config.PowMode {
+		switch config.PowMode {
 		case ModeFake:
 			log.Warn("Octell used in fake mode")
 		case ModeTest:
@@ -460,24 +461,25 @@ func (o *Octell) octellStart(chainConfig *entity.ChainConfig) {
 		case ModeShared:
 			log.Warn("Octell used in shared mode")
 		}
-		engine = New(o, &Config{
-			PowMode: o.Config.PowMode,
+		engine = New(&Config{
+			PowMode: config.PowMode,
 			//CacheDir:         stack.ResolvePath(o.config.CacheDir),
-			CachesInMem:      o.Config.CachesInMem,
-			CachesOnDisk:     o.Config.CachesOnDisk,
-			CachesLockMmap:   o.Config.CachesLockMmap,
-			DatasetDir:       o.Config.DatasetDir,
-			DatasetsInMem:    o.Config.DatasetsInMem,
-			DatasetsOnDisk:   o.Config.DatasetsOnDisk,
-			DatasetsLockMmap: o.Config.DatasetsLockMmap,
-			NotifyFull:       o.Config.NotifyFull,
+			CachesInMem:      config.CachesInMem,
+			CachesOnDisk:     config.CachesOnDisk,
+			CachesLockMmap:   config.CachesLockMmap,
+			DatasetDir:       config.DatasetDir,
+			DatasetsInMem:    config.DatasetsInMem,
+			DatasetsOnDisk:   config.DatasetsOnDisk,
+			DatasetsLockMmap: config.DatasetsLockMmap,
+			NotifyFull:       config.NotifyFull,
 		}, operationutils.ArrayByInter(notify), noverify)
 		engine.(*Octell).SetThreads(-1) // 禁用CPU工作
 	}
+	return beacon.New(engine)
 }
 
 // New创建一个全尺寸的octell PoW方案，并启动用于远程挖掘的后台线程，还可以选择通知一批远程服务新的工作包。
-func New(o *Octell, config *Config, notify []string, noverify bool) *Octell {
+func New(config *Config, notify []string, noverify bool) *Octell {
 	//if config.Log == nil {
 	//	config.Log = log.Root()
 	//}
@@ -491,22 +493,18 @@ func New(o *Octell, config *Config, notify []string, noverify bool) *Octell {
 	if config.DatasetDir != "" && config.DatasetsOnDisk > 0 {
 		log.Info("Disk storage enabled for octell DAGs", "dir", config.DatasetDir, "count", config.DatasetsOnDisk)
 	}
-	//octell := &Octell{
-	//	Config:   config,
-	//	caches:   newlru("cache", config.CachesInMem, newCache),
-	//	datasets: newlru("dataset", config.DatasetsInMem, newDataset),
-	//	update:   make(chan struct{}),
-	//	//hashrate: metrics.NewMeterForced(),
-	//}
-	o.Config = config
-	o.caches = newlru("cache", config.CachesInMem, newCache)
-	o.datasets = newlru("dataset", config.DatasetsInMem, newDataset)
-	o.update = make(chan struct{})
-	if config.PowMode == ModeShared {
-		o.shared = sharedOctell
+	octell := &Octell{
+		Config:   config,
+		caches:   newlru("cache", config.CachesInMem, newCache),
+		datasets: newlru("dataset", config.DatasetsInMem, newDataset),
+		update:   make(chan struct{}),
+		//hashrate: metrics.NewMeterForced(),
 	}
-	o.remote = startRemoteSealer(o, notify, noverify)
-	return o
+	if config.PowMode == ModeShared {
+		octell.shared = sharedOctell
+	}
+	octell.remote = startRemoteSealer(octell, notify, noverify)
+	return octell
 }
 
 //cache尝试检索指定块号的验证缓存，方法是首先检查内存中的缓存列表，然后检查存储在磁盘上的缓存，如果找不到缓存，最后生成一个。

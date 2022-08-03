@@ -22,7 +22,7 @@ To get started, you'll want to import the library:
 
 Now you're ready to start logging:
 
-    func main() {
+    func nodeentity() {
         log.Info("Program starting", "args", os.Args())
     }
 
@@ -115,7 +115,7 @@ Here's an example that logs the call stack rather than just the call site.
 
 This will output a line that looks like:
 
-    lvl=eror t=2014-05-02T16:07:23-0700 msg="open file" err="file not found" stack="[pkg/data.go:42 pkg/cmd/main.go]"
+    lvl=eror t=2014-05-02T16:07:23-0700 msg="open file" err="file not found" stack="[pkg/data.go:42 pkg/cmd/nodeentity.go]"
 
 The "%+v" format instructs the handler to include the path of the source file
 relative to the compile time GOPATH. The github.com/go-stack/stack package
@@ -237,7 +237,7 @@ Users of your library may then enable it if they like:
     import "github.com/inconshreveable/log15"
     import "example.com/yourlib"
 
-    func main() {
+    func nodeentity() {
         handler := // custom handler setup
         yourlib.Log.SetHandler(handler)
     }

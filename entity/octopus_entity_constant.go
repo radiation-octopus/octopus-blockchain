@@ -2,11 +2,16 @@ package entity
 
 import (
 	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/entity/hexutil"
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus/utils"
 	"golang.org/x/crypto/sha3"
 	"math/big"
+	"reflect"
+	"strings"
 )
 
 //定义hash和地址长度byte
@@ -15,6 +20,11 @@ const (
 	HashLength = 32
 	// 地址值长度
 	AddressLength = 20
+)
+
+var (
+	hashT    = reflect.TypeOf(Hash{})
+	addressT = reflect.TypeOf(Address{})
 )
 
 //定义hash字节类型
@@ -133,3 +143,73 @@ func (h *Hash) SetBytes(b []byte) {
 
 	copy(h[HashLength-len(b):], b)
 }
+
+//IsHexAddress验证字符串是否可以表示有效的十六进制编码以太坊地址。
+func IsHexAddress(s string) bool {
+	if has0xPrefix(s) {
+		s = s[2:]
+	}
+	return len(s) == 2*AddressLength && isHex(s)
+}
+
+// MixedcaseAddress保留原始字符串，该字符串可能正确校验和，也可能不正确校验和
+type MixedcaseAddress struct {
+	addr     Address
+	original string
+}
+
+//NewMixedcaseAddress构造函数（主要用于测试）
+func NewMixedcaseAddress(addr Address) MixedcaseAddress {
+	return MixedcaseAddress{addr: addr, original: addr.Hex()}
+}
+
+// NewMixedcaseAddressFromString is mainly meant for unit-testing
+func NewMixedcaseAddressFromString(hexaddr string) (*MixedcaseAddress, error) {
+	if !IsHexAddress(hexaddr) {
+		return nil, errors.New("invalid address")
+	}
+	a := FromHex(hexaddr)
+	return &MixedcaseAddress{addr: BytesToAddress(a), original: hexaddr}, nil
+}
+
+// MarshalJSON解析MixedcaseAddress
+func (ma *MixedcaseAddress) UnmarshalJSON(input []byte) error {
+	if err := hexutil.UnmarshalFixedJSON(addressT, input, ma.addr[:]); err != nil {
+		return err
+	}
+	return json.Unmarshal(input, &ma.original)
+}
+
+// MarshalJSON marshals the original value
+func (ma *MixedcaseAddress) MarshalJSON() ([]byte, error) {
+	if strings.HasPrefix(ma.original, "0x") || strings.HasPrefix(ma.original, "0X") {
+		return json.Marshal(fmt.Sprintf("0x%s", ma.original[2:]))
+	}
+	return json.Marshal(fmt.Sprintf("0x%s", ma.original))
+}
+
+// Address returns the address
+func (ma *MixedcaseAddress) Address() Address {
+	return ma.addr
+}
+
+// String implements fmt.Stringer
+func (ma *MixedcaseAddress) String() string {
+	if ma.ValidChecksum() {
+		return fmt.Sprintf("%s [chksum ok]", ma.original)
+	}
+	return fmt.Sprintf("%s [chksum INVALID]", ma.original)
+}
+
+// ValidChecksum returns true if the address has valid checksum
+func (ma *MixedcaseAddress) ValidChecksum() bool {
+	return ma.original == ma.addr.Hex()
+}
+
+// Original returns the mixed-case input string
+func (ma *MixedcaseAddress) Original() string {
+	return ma.original
+}
+
+// UnprefixedAddress allows marshaling an Address without 0x prefix.
+type UnprefixedAddress Address

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/entity/hexutil"
+	"github.com/radiation-octopus/octopus-blockchain/entity/math"
 	"github.com/radiation-octopus/octopus-blockchain/entity/rawdb"
 	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
@@ -104,6 +106,45 @@ func (g *Genesis) ToBlock(db typedb.Database) *block.Block {
 	return block.NewBlock(head, nil, nil, trie.NewStackTrie(nil))
 }
 
+// MarshalJSON marshals as JSON.
+func (g Genesis) MarshalJSON() ([]byte, error) {
+	type Genesis struct {
+		Config     *entity.ChainConfig                         `json:"config"`
+		Nonce      math.HexOrDecimal64                         `json:"nonce"`
+		Timestamp  math.HexOrDecimal64                         `json:"timestamp"`
+		ExtraData  hexutil.Bytes                               `json:"extraData"`
+		GasLimit   math.HexOrDecimal64                         `json:"gasLimit"   gencodec:"required"`
+		Difficulty *math.HexOrDecimal256                       `json:"difficulty" gencodec:"required"`
+		Mixhash    entity.Hash                                 `json:"mixHash"`
+		Coinbase   entity.Address                              `json:"coinbase"`
+		Alloc      map[entity.UnprefixedAddress]GenesisAccount `json:"alloc"      gencodec:"required"`
+		Number     math.HexOrDecimal64                         `json:"number"`
+		GasUsed    math.HexOrDecimal64                         `json:"gasUsed"`
+		ParentHash entity.Hash                                 `json:"parentHash"`
+		BaseFee    *math.HexOrDecimal256                       `json:"baseFeePerGas"`
+	}
+	var enc Genesis
+	enc.Config = g.Config
+	enc.Nonce = math.HexOrDecimal64(g.Nonce)
+	enc.Timestamp = math.HexOrDecimal64(g.Timestamp)
+	enc.ExtraData = g.ExtraData
+	enc.GasLimit = math.HexOrDecimal64(g.GasLimit)
+	enc.Difficulty = (*math.HexOrDecimal256)(g.Difficulty)
+	enc.Mixhash = g.Mixhash
+	enc.Coinbase = g.Coinbase
+	if g.Alloc != nil {
+		enc.Alloc = make(map[entity.UnprefixedAddress]GenesisAccount, len(g.Alloc))
+		for k, v := range g.Alloc {
+			enc.Alloc[entity.UnprefixedAddress(k)] = v
+		}
+	}
+	enc.Number = math.HexOrDecimal64(g.Number)
+	enc.GasUsed = math.HexOrDecimal64(g.GasUsed)
+	enc.ParentHash = g.ParentHash
+	enc.BaseFee = (*math.HexOrDecimal256)(g.BaseFee)
+	return json.Marshal(&enc)
+}
+
 //GenesisAccount是处于genesis区块状态的帐户。
 type GenesisAccount struct {
 	Code       []byte                      `json:"code,omitempty"`
@@ -176,6 +217,37 @@ func DefaultGenesisBlock() *Genesis {
 	}
 }
 
+// DeveloperGenesisBlock returns the 'geth --dev' genesis block.
+//func DeveloperGenesisBlock(period uint64, gasLimit uint64, faucet entity.Address) *Genesis {
+//	// Override the default period to the user requested one
+//	config := *entity.AllCliqueProtocolChanges
+//	config.Clique = &params.CliqueConfig{
+//		Period: period,
+//		Epoch:  config.Clique.Epoch,
+//	}
+//
+//	// Assemble and return the genesis with the precompiles and faucet pre-funded
+//	return &Genesis{
+//		Config:     &config,
+//		ExtraData:  append(append(make([]byte, 32), faucet[:]...), make([]byte, crypto.SignatureLength)...),
+//		GasLimit:   gasLimit,
+//		BaseFee:    big.NewInt(entity.InitialBaseFee),
+//		Difficulty: big.NewInt(1),
+//		Alloc: map[entity.Address]GenesisAccount{
+//			entity.BytesToAddress([]byte{1}): {Balance: big.NewInt(1)}, // ECRecover
+//			entity.BytesToAddress([]byte{2}): {Balance: big.NewInt(1)}, // SHA256
+//			entity.BytesToAddress([]byte{3}): {Balance: big.NewInt(1)}, // RIPEMD
+//			entity.BytesToAddress([]byte{4}): {Balance: big.NewInt(1)}, // Identity
+//			entity.BytesToAddress([]byte{5}): {Balance: big.NewInt(1)}, // ModExp
+//			entity.BytesToAddress([]byte{6}): {Balance: big.NewInt(1)}, // ECAdd
+//			entity.BytesToAddress([]byte{7}): {Balance: big.NewInt(1)}, // ECScalarMul
+//			entity.BytesToAddress([]byte{8}): {Balance: big.NewInt(1)}, // ECPairing
+//			entity.BytesToAddress([]byte{9}): {Balance: big.NewInt(1)}, // BLAKE2b
+//			faucet:                           {Balance: new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(9))},
+//		},
+//	}
+//}
+
 func MakeGenesis() *Genesis {
 	genesis := DefaultRopstenGenesisBlock()
 
@@ -211,7 +283,7 @@ func SetupGenesisBlockWithOverride(db typedb.Database, genesis *Genesis, overrid
 	stored := rawdb.ReadCanonicalHash(db, 0)
 	if (stored == entity.Hash{}) {
 		if genesis == nil {
-			log.Info("Writing default main-net genesis block")
+			log.Info("Writing default nodeentity-net genesis block")
 			genesis = DefaultGenesisBlock()
 		} else {
 			log.Info("Writing custom genesis block")
@@ -288,6 +360,10 @@ func SetupGenesisBlockWithOverride(db typedb.Database, genesis *Genesis, overrid
 	return &entity.ChainConfig{
 		ChainID: big.NewInt(666),
 	}, stored, nil
+}
+
+func SetupGenesisBlock(db typedb.Database, genesis *Genesis) (*entity.ChainConfig, entity.Hash, error) {
+	return SetupGenesisBlockWithOverride(db, genesis, nil, nil)
 }
 
 func decodePrealloc(data string) GenesisAlloc {

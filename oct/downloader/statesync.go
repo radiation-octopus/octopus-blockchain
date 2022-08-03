@@ -1,19 +1,3 @@
-// Copyright 2017 The go-ethereum Authors
-// This file is part of the go-ethereum library.
-//
-// The go-ethereum library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The go-ethereum library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
-
 package downloader
 
 import (
@@ -40,8 +24,7 @@ func (d *Downloader) syncState(root entity.Hash) *stateSync {
 	return s
 }
 
-// stateFetcher manages the active state sync and accepts requests
-// on its behalf.
+// stateFetcher管理活动状态同步并代表其接受请求。
 func (d *Downloader) stateFetcher() {
 	for {
 		select {
@@ -55,8 +38,7 @@ func (d *Downloader) stateFetcher() {
 	}
 }
 
-// runStateSync runs a state synchronisation until it completes or another root
-// hash is requested to be switched over to.
+// runStateSync运行状态同步，直到完成或请求切换到另一个根哈希。
 func (d *Downloader) runStateSync(s *stateSync) *stateSync {
 	log.Trace("State sync starting", "root", s.root)
 

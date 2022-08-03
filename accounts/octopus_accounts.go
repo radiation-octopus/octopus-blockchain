@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"fmt"
+	octopus "github.com/radiation-octopus/octopus-blockchain"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
 	"github.com/radiation-octopus/octopus-blockchain/event"
@@ -18,6 +19,12 @@ const (
 
 	// WalletDropped
 	WalletDropped
+)
+const (
+	MimetypeDataWithValidator = "data/validator"
+	MimetypeTypedData         = "data/typed"
+	MimetypeClique            = "application/x-clique-header"
+	MimetypeTextPlain         = "text/plain"
 )
 
 // Wallet表示可能包含一个或多个帐户（源自同一种子）的软件或硬件钱包。
@@ -51,7 +58,7 @@ type Wallet interface {
 	//注意，自派生将递增指定路径的最后一个组件，而不是递减到子路径中，以允许发现从非零组件开始的帐户。
 	//一些硬件钱包在进化过程中切换了派生路径，因此这种方法也支持提供多个基础来发现旧用户帐户。只有最后一个基数将用于派生下一个空帐户。
 	//您可以通过使用零链状态读取器调用SelfDerive来禁用自动帐户发现。
-	//SelfDerive(bases []DerivationPath, chain ethereum.ChainStateReader)
+	SelfDerive(bases []DerivationPath, chain octopus.ChainStateReader)
 
 	// SignData请求钱包对给定数据的哈希进行签名，它可以仅通过包含在其中的地址来查找指定的帐户，也可以选择借助嵌入URL字段中的任何位置元数据来查找指定的帐户。
 	//如果钱包需要额外的身份验证来签署请求（例如，解密帐户的密码或验证交易的PIN码），将返回AuthNeededError实例，其中包含用户需要哪些字段或操作的信息。

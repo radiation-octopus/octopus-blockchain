@@ -168,6 +168,19 @@ func ReadRawReceipts(db typedb.Reader, hash entity.Hash, number uint64) block2.R
 	return receipts
 }
 
+// ReadHeadHeader returns the current canonical head header.
+func ReadHeadHeader(db typedb.Reader) *block2.Header {
+	headHeaderHash := ReadHeadHeaderHash(db)
+	if headHeaderHash == (entity.Hash{}) {
+		return nil
+	}
+	headHeaderNumber := ReadHeaderNumber(db, headHeaderHash)
+	if headHeaderNumber == nil {
+		return nil
+	}
+	return ReadHeader(db, headHeaderHash, *headHeaderNumber)
+}
+
 // ReadTdRLP检索与RLP编码中的哈希对应的块的总难度。
 func ReadTdRLP(db typedb.Reader, hash entity.Hash, number uint64) rlp.RawValue {
 	var data []byte

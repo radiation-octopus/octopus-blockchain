@@ -151,6 +151,11 @@ func blockReceiptsKey(number uint64, hash entity.Hash) []byte {
 	return append(append(operationutils.FromHex(receiptsMark), encodeBlockNumber(number)...), hash.Bytes()...)
 }
 
+// preimageKey = PreimagePrefix + hash
+func preimageKey(hash entity.Hash) []byte {
+	return append(PreimagePrefix, hash.Bytes()...)
+}
+
 // headerTDKey = headerMark + num (uint64 big endian) + hash + headerTDMark
 func headerTDKey(number uint64, hash entity.Hash) []byte {
 	return append(headerKey(number, hash), headerTDMark...)

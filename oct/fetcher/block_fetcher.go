@@ -328,7 +328,7 @@ func (f *BlockFetcher) FilterBodies(peer string, transactions [][]*block.Transac
 	}
 }
 
-// Loop is the main fetcher loop, checking and processing various notification
+// Loop is the nodeentity fetcher loop, checking and processing various notification
 // events.
 func (f *BlockFetcher) loop() {
 	// Iterate the block fetching until a quit is requested

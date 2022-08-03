@@ -61,14 +61,12 @@ const (
 	seedMaxAge         = 5 * 24 * time.Hour
 )
 
-// Table is the 'node table', a Kademlia-like index of neighbor nodes. The table keeps
-// itself up-to-date by verifying the liveness of neighbors and requesting their node
-// records when announcements of a new record version are received.
+// 表是“节点表”，是一个类似Kademlia的邻居节点索引。该表通过验证邻居的活跃度并在收到新记录版本的通知时请求其节点记录来保持自身最新。
 type Table struct {
-	mutex   sync.Mutex        // protects buckets, bucket content, nursery, rand
-	buckets [nBuckets]*bucket // index of known nodes by distance
-	nursery []*node           // bootstrap nodes
-	rand    *mrand.Rand       // source of randomness, periodically reseeded
+	mutex   sync.Mutex        // 保护水桶、水桶内容、托儿所、兰德
+	buckets [nBuckets]*bucket // 按距离列出的已知节点索引
+	nursery []*node           // 引导节点
+	rand    *mrand.Rand       // 随机性源，定期重新设定种子
 	ips     netutil.DistinctNetSet
 
 	log        log.Logger
@@ -181,9 +179,7 @@ func (tab *Table) close() {
 	<-tab.closed
 }
 
-// setFallbackNodes sets the initial points of contact. These nodes
-// are used to connect to the network if the table is empty and there
-// are no known nodes in the database.
+// setFallbackNodes设置初始接触点。如果表为空且数据库中没有已知节点，则这些节点用于连接到网络。
 func (tab *Table) setFallbackNodes(nodes []*enode.Node) error {
 	for _, n := range nodes {
 		if err := n.ValidateComplete(); err != nil {
@@ -392,20 +388,16 @@ func (tab *Table) copyLiveNodes() {
 	}
 }
 
-// findnodeByID returns the n nodes in the table that are closest to the given id.
-// This is used by the FINDNODE/v4 handler.
-//
-// The preferLive parameter says whether the caller wants liveness-checked results. If
-// preferLive is true and the table contains any verified nodes, the result will not
-// contain unverified nodes. However, if there are no verified nodes at all, the result
-// will contain unverified nodes.
+// findnodeByID返回表中最接近给定id的n个节点。FINDNODE/v4处理程序使用这一点。
+//preferLive参数表示调用者是否需要活动性检查结果。
+//如果preferLive为true，并且表包含任何已验证的节点，则结果将不包含未验证的节点。
+//但是，如果根本没有验证的节点，则结果将包含未验证的节点。
 func (tab *Table) findnodeByID(target enode.ID, nresults int, preferLive bool) *nodesByDistance {
 	tab.mutex.Lock()
 	defer tab.mutex.Unlock()
 
-	// Scan all buckets. There might be a better way to do this, but there aren't that many
-	// buckets, so this solution should be fine. The worst-case complexity of this loop
-	// is O(tab.len() * nresults).
+	// 扫描所有存储桶。也许有更好的方法可以做到这一点，但没有那么多桶，所以这个解决方案应该很好。
+	//该循环的最坏情况复杂度为O（tab.len（）*nresults）。
 	nodes := &nodesByDistance{target: target}
 	liveNodes := &nodesByDistance{target: target}
 	for _, b := range &tab.buckets {
@@ -442,7 +434,7 @@ func (tab *Table) bucketLen(id enode.ID) int {
 	return len(tab.bucket(id).entries)
 }
 
-// bucket returns the bucket for the given node ID hash.
+// bucket返回给定节点ID哈希的bucket。
 func (tab *Table) bucket(id enode.ID) *bucket {
 	d := enode.LogDist(tab.self().ID(), id)
 	return tab.bucketAtDistance(d)
@@ -455,11 +447,9 @@ func (tab *Table) bucketAtDistance(d int) *bucket {
 	return tab.buckets[d-bucketMinDistance-1]
 }
 
-// addSeenNode adds a node which may or may not be live to the end of a bucket. If the
-// bucket has space available, adding the node succeeds immediately. Otherwise, the node is
-// added to the replacements list.
-//
-// The caller must not hold tab.mutex.
+//addSeenNode添加一个节点，该节点可能处于活动状态，也可能不处于活动状态。
+//如果bucket有可用空间，则添加节点立即成功。
+//否则，该节点将添加到替换列表中。调用者不得持有tab.mutex。
 func (tab *Table) addSeenNode(n *node) {
 	if n.ID() == tab.self().ID() {
 		return
@@ -490,15 +480,10 @@ func (tab *Table) addSeenNode(n *node) {
 	}
 }
 
-// addVerifiedNode adds a node whose existence has been verified recently to the front of a
-// bucket. If the node is already in the bucket, it is moved to the front. If the bucket
-// has no space, the node is added to the replacements list.
-//
-// There is an additional safety measure: if the table is still initializing the node
-// is not added. This prevents an attack where the table could be filled by just sending
-// ping repeatedly.
-//
-// The caller must not hold tab.mutex.
+//addVerifiedNode将最近已验证其存在的节点添加到bucket的前面。
+//如果节点已在铲斗中，则将其移至前部。如果存储桶没有空间，则该节点将添加到替换列表中。
+//还有一个额外的安全措施：如果表仍在初始化，则不添加节点。
+//这可以防止通过重复发送ping来填充表的攻击。调用者不得持有tab.mutex。
 func (tab *Table) addVerifiedNode(n *node) {
 	if !tab.isInitDone() {
 		return
@@ -515,7 +500,7 @@ func (tab *Table) addVerifiedNode(n *node) {
 		return
 	}
 	if len(b.entries) >= bucketSize {
-		// Bucket full, maybe add as replacement.
+		// 铲斗已满，可能需要添加以替换。
 		tab.addReplacement(b, n)
 		return
 	}
@@ -603,8 +588,7 @@ func (tab *Table) replace(b *bucket, last *node) *node {
 	return r
 }
 
-// bumpInBucket moves the given node to the front of the bucket entry list
-// if it is contained in that list.
+// bumpInBucket将给定节点移动到bucket条目列表的前面（如果该列表中包含该节点）。
 func (tab *Table) bumpInBucket(b *bucket, n *node) bool {
 	for i := range b.entries {
 		if b.entries[i].ID() == n.ID() {

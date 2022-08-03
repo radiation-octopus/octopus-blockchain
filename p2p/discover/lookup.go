@@ -64,8 +64,7 @@ func (it *lookup) run() []*enode.Node {
 	return unwrapNodes(it.result.entries)
 }
 
-// advance advances the lookup until any new nodes have been found.
-// It returns false when the lookup has ended.
+//advance将继续查找，直到找到任何新节点。查找结束时返回false。
 func (it *lookup) advance() bool {
 	for it.startQueries() {
 		select {
@@ -103,12 +102,10 @@ func (it *lookup) startQueries() bool {
 		return false
 	}
 
-	// The first query returns nodes from the local table.
+	// 第一个查询从本地表返回节点。
 	if it.queries == -1 {
 		closest := it.tab.findnodeByID(it.result.target, bucketSize, false)
-		// Avoid finishing the lookup too quickly if table is empty. It'd be better to wait
-		// for the table to fill in this case, but there is no good mechanism for that
-		// yet.
+		// 如果表为空，请避免过快完成查找。在这种情况下，最好等待表格填充，但目前还没有好的机制。
 		if len(closest.entries) == 0 {
 			it.slowdown()
 		}
@@ -117,7 +114,7 @@ func (it *lookup) startQueries() bool {
 		return true
 	}
 
-	// Ask the closest nodes that we haven't asked yet.
+	// 询问我们尚未询问的最近节点。
 	for i := 0; i < len(it.result.entries) && it.queries < alpha; i++ {
 		n := it.result.entries[i]
 		if !it.asked[n.ID()] {

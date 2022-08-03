@@ -118,7 +118,7 @@ func (batch *syncMemBatch) hasCode(hash entity.Hash) bool {
 	return ok
 }
 
-// Sync is the main state trie synchronisation scheduler, which provides yet
+// Sync is the nodeentity state trie synchronisation scheduler, which provides yet
 // unknown trie hashes to retrieve, accepts node data associated with said hashes
 // and reconstructs the trie step by step until all is done.
 type Sync struct {

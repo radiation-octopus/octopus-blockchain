@@ -6,6 +6,7 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	"github.com/radiation-octopus/octopus-blockchain/rlp"
 	"github.com/radiation-octopus/octopus/utils"
+	"io"
 	"math/big"
 	"reflect"
 	"sync/atomic"
@@ -116,6 +117,13 @@ type Block struct {
 	ReceivedFrom interface{}
 }
 
+// “外部”块编码。用于oct协议等。
+type extblock struct {
+	Header *Header
+	Txs    []*Transaction
+	Uncles []*Header
+}
+
 type Blocks []*Block
 
 // 新块创建新块。复制输入数据，对标题和字段值的更改不会影响块。
@@ -159,6 +167,15 @@ func (b Block) newGenesis() {
 
 }
 
+// 编码器RLP将b序列化为辐射章鱼RLP块格式。
+func (b *Block) EncodeRLP(w io.Writer) error {
+	return rlp.Encode(w, extblock{
+		Header: b.header,
+		Txs:    b.transactions,
+		Uncles: b.uncles,
+	})
+}
+
 //获取交易集
 func (b *Block) Transactions() Transactions { return b.transactions }
 
@@ -170,6 +187,7 @@ func (b *Block) Time() uint64         { return b.header.Time }
 
 func (b *Block) NumberU64() uint64        { return b.header.Number.Uint64() }
 func (b *Block) Nonce() uint64            { return binary.BigEndian.Uint64(b.header.Nonce[:]) }
+func (b *Block) Coinbase() entity.Address { return b.header.Coinbase }
 func (b *Block) Root() entity.Hash        { return b.header.Root }
 func (b *Block) ParentHash() entity.Hash  { return b.header.ParentHash }
 func (b *Block) TxHash() entity.Hash      { return b.header.TxHash }

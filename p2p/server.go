@@ -102,6 +102,9 @@ type Config struct {
 	//如果端口为零，操作系统将选择一个端口。当服务器启动时，ListenAddr字段将用实际地址更新。
 	ListenAddr string
 
+	// 如果discadr设置为非nil值，则服务器将使用ListenAddr作为TCP，使用discadr作为UDP发现协议。
+	DiscAddr string
+
 	// 如果设置为非零值，则使用给定的NAT端口映射器使侦听端口可用于Internet。
 	NAT nat.Interface `toml:",omitempty"`
 

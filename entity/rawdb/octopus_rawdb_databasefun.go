@@ -3,6 +3,7 @@ package rawdb
 import (
 	"errors"
 	"github.com/radiation-octopus/octopus-blockchain/typedb"
+	"github.com/radiation-octopus/octopus-blockchain/typedb/leveldb"
 	"github.com/radiation-octopus/octopus-blockchain/typedb/memorydb"
 )
 
@@ -72,6 +73,11 @@ func (db *nofreezedb) ReadAncients(fn func(reader typedb.AncientReaderOp) error)
 	return fn(db)
 }
 
+//NewDatabase在给定的键值数据存储上创建一个高级数据库，而无需将不可变的链段移动到冷藏库中。
+func NewDatabase(db typedb.KeyValueStore) typedb.Database {
+	return &nofreezedb{KeyValueStore: db}
+}
+
 // NewDatabase在给定的键值数据存储上创建一个高级数据库
 func NewnofreeDatabase(db typedb.KeyValueStore) typedb.Database {
 	return &nofreezedb{KeyValueStore: db}
@@ -80,4 +86,13 @@ func NewnofreeDatabase(db typedb.KeyValueStore) typedb.Database {
 // NewMemoryDatabase创建了一个短暂的内存键值数据库
 func NewMemoryDatabase() typedb.Database {
 	return NewnofreeDatabase(memorydb.New())
+}
+
+// NewLevelDBDatabase创建了一个持久的键值数据库，而无需将不可变的链段移动到冷藏库中。
+func NewLevelDBDatabase(file string, cache int, handles int, namespace string, readonly bool) (typedb.Database, error) {
+	db, err := leveldb.New(file, cache, handles, namespace, readonly)
+	if err != nil {
+		return nil, err
+	}
+	return NewDatabase(db), nil
 }

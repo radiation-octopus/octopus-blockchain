@@ -1,6 +1,7 @@
 package oct
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/accounts"
@@ -13,8 +14,11 @@ import (
 	"github.com/radiation-octopus/octopus-blockchain/operationutils"
 	"github.com/radiation-octopus/octopus/utils"
 	"math/big"
+	"net"
+	"os"
 	"runtime"
 	"strconv"
+	"strings"
 )
 
 //交易
@@ -203,4 +207,48 @@ func (a MinerStart) MinerStartCmd(inMap map[string]interface{}) interface{} {
 	//from := inMap["from"]
 	a.Oct.StartMining(runtime.NumCPU())
 	return true
+}
+
+type P2PClient struct {
+}
+
+func (p P2PClient) P2PClientCmd(inMap map[string]interface{}) interface{} {
+	//获取服务端端口
+	port := inMap["port"]
+	addr := "127.0.0.1:" + utils.GetInToStr(port)
+	// 连接到服务端建立的tcp连接
+	conn, err := net.Dial("tcp", addr)
+	// 输出当前建Dial函数的返回值类型, 属于*net.TCPConn类型
+	fmt.Printf("客户端: %T\n", conn)
+	if err != nil {
+		// 连接的时候出现错误
+		fmt.Println("err :", err)
+		panic(err)
+	}
+	// 当函数返回的时候关闭连接
+	defer conn.Close()
+	// 获取一个标准输入的*Reader结构体指针类型的变量
+	inputReader := bufio.NewReader(os.Stdin)
+	for {
+		// 调用*Reader结构体指针类型的读取方法
+		input, _ := inputReader.ReadString('\n') // 读取用户输入
+		// 去除掉\r \n符号
+		inputInfo := strings.Trim(input, "\r\n")
+		// 判断输入的是否是Q, 如果是Q则退出
+		if strings.ToUpper(inputInfo) == "Q" { // 如果输入q就退出
+			panic("退出")
+		}
+		_, err = conn.Write([]byte(inputInfo)) // 发送数据
+		if err != nil {
+			panic(err)
+		}
+		buf := [512]byte{}
+		// 读取服务端发送的数据
+		n, err := conn.Read(buf[:])
+		if err != nil {
+			fmt.Println("recv failed, err:", err)
+			panic(err)
+		}
+		fmt.Println("客户端接收服务端发送的数据: ", string(buf[:n]))
+	}
 }

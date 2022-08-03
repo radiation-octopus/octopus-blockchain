@@ -81,6 +81,18 @@ func (am *Manager) update() {
 	}
 }
 
+//AddBackend开始跟踪钱包更新的其他后端。cmd/geth假设此func返回后，后端已经集成。
+func (am *Manager) AddBackend(backend Backend) {
+	done := make(chan struct{})
+	am.newBackends <- newBackendEvent{backend, done}
+	<-done
+}
+
+// Subscribe创建异步订阅，以便在经理检测到钱包从其任何后端到达或离开时接收通知。
+func (am *Manager) Subscribe(sink chan<- WalletEvent) event.Subscription {
+	return am.feed.Subscribe(sink)
+}
+
 // 后端从帐户管理器检索具有给定类型的后端。
 func (am *Manager) Backends(kind reflect.Type) []Backend {
 	am.lock.RLock()

@@ -5,14 +5,16 @@ import (
 	"fmt"
 	"github.com/radiation-octopus/octopus-blockchain/accounts"
 	"github.com/radiation-octopus/octopus-blockchain/blockchain"
-	"github.com/radiation-octopus/octopus-blockchain/blockchain/blockchainconfig"
 	"github.com/radiation-octopus/octopus-blockchain/consensus"
+	"github.com/radiation-octopus/octopus-blockchain/consensus/octell"
 	"github.com/radiation-octopus/octopus-blockchain/entity"
 	block2 "github.com/radiation-octopus/octopus-blockchain/entity/block"
+	"github.com/radiation-octopus/octopus-blockchain/entity/genesis"
 	"github.com/radiation-octopus/octopus-blockchain/event"
 	"github.com/radiation-octopus/octopus-blockchain/internal/ethapi"
 	"github.com/radiation-octopus/octopus-blockchain/log"
 	"github.com/radiation-octopus/octopus-blockchain/miner"
+	"github.com/radiation-octopus/octopus-blockchain/node"
 	"github.com/radiation-octopus/octopus-blockchain/oct/filters"
 	"github.com/radiation-octopus/octopus-blockchain/oct/octconfig"
 	"github.com/radiation-octopus/octopus-blockchain/operationdb"
@@ -183,7 +185,7 @@ func (oct *Octopus) StateAtBlock(b *block2.Block, reexec uint64, base *operation
 
 func (oct *Octopus) start(config *octconfig.Config) {
 	log.Info("oct starting")
-	New(oct, config)
+	//New(oct, config)
 
 	// 根据服务器限制计算最大对等点数
 	//maxPeers := oct.p2pServer.MaxPeers
@@ -195,9 +197,9 @@ func (oct *Octopus) close() {
 
 }
 
-func New(oct *Octopus, cfg *octconfig.Config) (*Octopus, error) {
+func New(stack *node.Node, config *octconfig.Config) (*Octopus, error) {
 
-	merger := consensus.NewMerger(oct.Blockchain.GetDB())
+	//merger := consensus.NewMerger(oct.Blockchain.GetDB())
 
 	var (
 		backends []accounts.Backend
@@ -205,32 +207,75 @@ func New(oct *Octopus, cfg *octconfig.Config) (*Octopus, error) {
 	)
 	backends = append(backends, accounts.NewKeyStore("keystore", n, p))
 
-	oct.config = cfg
-	oct.merger = merger
-	oct.accountManager = accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: true}, backends...)
-	oct.closeBloomHandler = make(chan struct{})
-	oct.txPool = blockchain.NewTxPool(blockchainconfig.DefaultTxPoolConfig, oct.Blockchain)
-	oct.networkID = cfg.NetworkId
-	oct.gasPrice = cfg.Miner.GasPrice
-	oct.chainDb = oct.Blockchain.GetDB()
-	oct.miner = miner.New(oct, &cfg.Miner, oct.Blockchain.Config(), oct.Engine)
-
-	oct.APIBackend = &OctAPIBackend{true, true, oct}
+	// 组装辐射章鱼对象
+	chainDb, err := stack.OpenDatabaseWithFreezer("chaindata", config.DatabaseCache, config.DatabaseHandles, config.DatabaseFreezer, "eth/db/chaindata/", false)
+	if err != nil {
+		return nil, err
+	}
+	chainConfig, _, _ := genesis.SetupGenesisBlockWithOverride(chainDb, config.Genesis, nil, nil)
+	octellConfig := config.Octell
+	oct := &Octopus{
+		config: config,
+		//merger:            merger,
+		chainDb: chainDb,
+		//eventMux:          stack.EventMux(),
+		accountManager:    accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: true}, backends...),
+		Engine:            octell.CreateOctell(chainConfig, &octellConfig),
+		closeBloomHandler: make(chan struct{}),
+		networkID:         config.NetworkId,
+		gasPrice:          config.Miner.GasPrice,
+		//etherbase:         config.Miner.Octerbase,
+		//bloomRequests:     make(chan chan *bloombits.Retrieval),
+		//bloomIndexer:      core.NewBloomIndexer(chainDb, params.BloomBitsBlocks, params.BloomConfirms),
+		p2pServer: stack.Server(),
+		//shutdownTracker:   shutdowncheck.NewShutdownTracker(chainDb),
+	}
+	//oct.config = cfg
+	//oct.merger = merger
+	//oct.accountManager = accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: true}, backends...)
+	//oct.closeBloomHandler = make(chan struct{})
+	//oct.txPool = blockchain.NewTxPool(blockchainconfig.DefaultTxPoolConfig, oct.Blockchain)
+	//oct.networkID = cfg.NetworkId
+	//oct.gasPrice = cfg.Miner.GasPrice
+	//oct.chainDb = oct.Blockchain.GetDB()
+	//oct.miner = miner.New(oct, &cfg.Miner, oct.Blockchain.Config(), oct.Engine)
+	//
+	//oct.APIBackend = &OctAPIBackend{true, true, oct}
 	// 允许下载程序在快速同步期间使用trie缓存余量
 	//cacheLimit := cacheConfig.TrieCleanLimit + cacheConfig.TrieDirtyLimit + cacheConfig.SnapshotLimit
-	checkpoint := cfg.Checkpoint
-	var err error
+	var (
+		vmConfig = vm.Config{
+			EnablePreimageRecording: config.EnablePreimageRecording,
+		}
+		cacheConfig = &blockchain.CacheConfig{
+			//TrieCleanLimit:      config.TrieCleanCache,
+			//TrieCleanJournal:    stack.ResolvePath(config.TrieCleanCacheJournal),
+			//TrieCleanRejournal:  config.TrieCleanCacheRejournal,
+			//TrieCleanNoPrefetch: config.NoPrefetch,
+			//TrieDirtyLimit:      config.TrieDirtyCache,
+			//TrieDirtyDisabled:   config.NoPruning,
+			//TrieTimeLimit:       config.TrieTimeout,
+			//SnapshotLimit:       config.SnapshotCache,
+			//Preimages:           config.Preimages,
+		}
+	)
+	//初始化区块链
+	oct.Blockchain, err = blockchain.NewBlockChain(chainDb, cacheConfig, chainConfig, oct.Engine, vmConfig, nil)
+	if err != nil {
+		return nil, err
+	}
+	checkpoint := config.Checkpoint
 	if oct.handler, err = newHandler(&handlerConfig{
-		Database: oct.Blockchain.GetDB(),
+		Database: chainDb,
 		Chain:    oct.Blockchain,
 		TxPool:   oct.txPool,
-		Merger:   merger,
-		Network:  cfg.NetworkId,
-		Sync:     cfg.SyncMode,
+		//Merger:   merger,
+		Network: config.NetworkId,
+		Sync:    config.SyncMode,
 		//BloomCache:     uint64(cacheLimit),
 		EventMux:       oct.eventMux,
 		Checkpoint:     checkpoint,
-		RequiredBlocks: cfg.RequiredBlocks,
+		RequiredBlocks: config.RequiredBlocks,
 	}); err != nil {
 		return nil, err
 	}
